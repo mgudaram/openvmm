@@ -198,7 +198,7 @@ impl UeventListener {
         if path.exists() {
             return Ok(());
         }
-
+        tracing::info!("Waiting for device path: {:?}\n", path);
         // Register the listener.
         let (send, recv) = mesh::oneshot();
         let _handle = self
@@ -209,6 +209,7 @@ impl UeventListener {
                     if send.is_none() {
                         return;
                     }
+                    tracing::info!("Matching for event");
                     match event {
                         Notification::Event(uevent) => {
                             if (uevent.get("ACTION") == Some("add"))

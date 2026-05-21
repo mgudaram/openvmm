@@ -108,3 +108,9 @@ pub enum NonVolatileStoreKind {}
 impl ResourceKind for NonVolatileStoreKind {
     const NAME: &'static str = "nvstore";
 }
+
+/// Resource kind for RPB card.
+pub enum RpbDeviceHandle {}
+impl ResourceKind for RpbDeviceHandle {
+    const NAME: &'static str = "rpb-handle";
+}

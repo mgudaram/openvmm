@@ -251,7 +251,14 @@ pub enum MemoryAllocationMode {
     /// Use the host provided memory topology, and use VTL2_PROTECTABLE entries
     /// as VTL2 ram. This is the default if no
     /// `openhcl/memory-allocation-property` mode is provided by the host.
-    Host,
+    Host {
+        /// The number of bytes VTL2 should allocate for memory for itself.
+        /// Encoded as `openhcl/memory-size` in device tree.
+        memory_size: Option<u64>,
+        /// The number of bytes VTL2 should allocate for mmio for itself.
+        /// Encoded as `openhcl/mmio-size` in device tree.
+        mmio_size: Option<u64>,
+    },
     /// Allow VTL2 to select its own ranges from the address space to use for
     /// memory, with a size provided by the host.
     Vtl2 {
@@ -316,7 +323,10 @@ impl<
             com3_serial: false,
             gic: None,
             pmu_gsiv: None,
-            memory_allocation_mode: MemoryAllocationMode::Host,
+            memory_allocation_mode: MemoryAllocationMode::Host {
+                memory_size: None,
+                mmio_size: None,
+            },
             entropy: None,
             device_dma_page_count: None,
             nvme_keepalive: false,
@@ -461,7 +471,22 @@ impl<
 
                     match memory_allocation_mode.read_str().map_err(ErrorKind::Prop)? {
                         "host" => {
-                            storage.memory_allocation_mode = MemoryAllocationMode::Host;
+                            let memory_size = child
+                                .find_property("memory-size")
+                                .map_err(ErrorKind::Prop)?
+                                .map(|p| p.read_u64(0))
+                                .transpose()
+                                .map_err(ErrorKind::Prop)?;
+                            let mmio_size = child
+                                .find_property("mmio-size")
+                                .map_err(ErrorKind::Prop)?
+                                .map(|p| p.read_u64(0))
+                                .transpose()
+                                .map_err(ErrorKind::Prop)?;
+                            storage.memory_allocation_mode = MemoryAllocationMode::Host {
+                                memory_size,
+                                mmio_size,
+                            };
                         }
                         "vtl2" => {
                             let memory_size = child
@@ -1459,7 +1484,21 @@ mod tests {
         let mut openhcl = root.start_node("openhcl").unwrap();
 
         let memory_alloc_str = match context.memory_allocation_mode {
-            MemoryAllocationMode::Host => "host",
+            MemoryAllocationMode::Host {
+                memory_size,
+                mmio_size,
+            } => {
+                // Encode the size at the expected property.
+                if let Some(memory_size) = memory_size {
+                    openhcl = openhcl
+                        .add_u64(p_memory_allocation_size, memory_size)
+                        .unwrap();
+                }
+                if let Some(mmio_size) = mmio_size {
+                    openhcl = openhcl.add_u64(p_mmio_allocation_size, mmio_size).unwrap();
+                }
+                "host"
+            },
             MemoryAllocationMode::Vtl2 {
                 memory_size,
                 mmio_size,
@@ -1589,7 +1628,10 @@ mod tests {
                 gic_redistributor_stride: 0x20000,
             }),
             Some(0x17),
-            MemoryAllocationMode::Host,
+            MemoryAllocationMode::Host {
+                memory_size: Some(1000 * 1024 * 1024), // 1000 MB
+                mmio_size: Some(128 * 1024 * 1024),    // 128 MB
+            },
             Some(1234),
         );
 
@@ -1704,7 +1746,10 @@ mod tests {
             false,
             None,
             None,
-            MemoryAllocationMode::Host,
+            MemoryAllocationMode::Host {
+                memory_size: Some(1000 * 1024 * 1024), // 1000 MB
+                mmio_size: Some(128 * 1024 * 1024),    // 128 MB
+            },
             None,
         );
 
@@ -1743,7 +1788,10 @@ mod tests {
             false,
             None,
             None,
-            MemoryAllocationMode::Host,
+            MemoryAllocationMode::Host {
+                memory_size: Some(1000 * 1024 * 1024), // 1000 MB
+                mmio_size: Some(128 * 1024 * 1024),    // 128 MB
+            },
             None,
         );
 
@@ -1787,7 +1835,10 @@ mod tests {
             false,
             None,
             None,
-            MemoryAllocationMode::Host,
+            MemoryAllocationMode::Host {
+                memory_size: Some(1000 * 1024 * 1024), // 1000 MB
+                mmio_size: Some(128 * 1024 * 1024),    // 128 MB
+            },
             None,
         );
 
@@ -1831,7 +1882,10 @@ mod tests {
             false,
             None,
             None,
-            MemoryAllocationMode::Host,
+            MemoryAllocationMode::Host {
+                memory_size: Some(1000 * 1024 * 1024), // 1000 MB
+                mmio_size: Some(128 * 1024 * 1024),    // 128 MB
+            },
             None,
         );
 
@@ -1892,7 +1946,10 @@ mod tests {
             true,
             None,
             None,
-            MemoryAllocationMode::Host,
+            MemoryAllocationMode::Host {
+                memory_size: Some(1000 * 1024 * 1024), // 1000 MB
+                mmio_size: Some(128 * 1024 * 1024),    // 128 MB
+            },
             None,
         );
 

@@ -567,9 +567,10 @@ fn do_main() -> anyhow::Result<()> {
         //
         // Since nvme is loaded as a module, and that happens after this call,
         // this will take precedence over the in-kernel nvme driver.
+        // all devices: "ffffffff ffffffff ffffffff ffffffff ffffffff ffffff",
         fs_err::write(
             "/sys/bus/pci/drivers/vfio-pci/new_id",
-            "ffffffff ffffffff ffffffff ffffffff 010802 ffffff",
+            "ffffffff ffffffff ffffffff ffffffff ffffffff ffffff",
         )
         .context("failed to register nvme for vfio")?;
         log::info!("registered vfio-pci as driver for nvme");

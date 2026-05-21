@@ -196,6 +196,9 @@ pub struct Vtl2SettingsDynamic {
     /// NVMe controllers
     #[inspect(iter_by_index)]
     pub nvme_controllers: Vec<NvmeController>,
+    // RPB controller
+    // #[inspect(iter_by_index)]
+    //pub vpci_devices: Vec<NicDevice>,
 }
 
 #[derive(Debug, Default, Clone, MeshPayload, Inspect)]

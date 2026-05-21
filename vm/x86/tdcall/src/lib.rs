@@ -789,3 +789,183 @@ pub fn tdcall_mr_report(call: &mut impl Tdcall, report: &mut TdReport) -> Result
         _ => Err(output.rax),
     }
 }
+
+
+/// TDX Connect TDCALLs
+/// Issue a TDG.TDI.VALIDATE call.
+pub fn tdcall_tdi_validate(
+    call: &mut impl Tdcall,
+    function_id: u64,
+    gla_device_hashes: u64,
+) -> Result<(), TdCallResult> {
+    let input = TdcallInput {
+        leaf: TdCallLeaf::TDI_VALIDATE,
+        rcx: function_id,
+        rdx: gla_device_hashes,
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(()),
+        _ => Err(output.rax),
+    }
+}
+
+/// Issue a TDG.TDI.RD call.
+pub fn tdcall_tdi_read(
+    call: &mut impl Tdcall,
+    function_id: u64,
+    field_code: TdxExtendedFieldCode,
+) -> Result<u64, TdCallResult> {
+    let input = TdcallInput {
+        leaf: TdCallLeaf::TDI_RD,
+        rcx: function_id,
+        rdx: field_code.into(),
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(output.rcx),
+        _ => Err(output.rax),
+    }
+}
+
+/// Issue a TDG.TDI.START call.
+pub fn tdcall_tdi_start(call: &mut impl Tdcall, function_id: u64) -> Result<(), TdCallResult> {
+    let input = TdcallInput {
+        leaf: TdCallLeaf::TDI_START,
+        rcx: function_id,
+        rdx: 0,
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(()),
+        _ => Err(output.rax),
+    }
+}
+
+/// Issue a TDG.DMAR.ACCEPT call.
+pub fn tdcall_dmar_accept(
+    call: &mut impl Tdcall,
+    function_id: u64,
+    target: u64,
+) -> Result<(), TdCallResult> {
+    let input = TdcallInput {
+        leaf: TdCallLeaf::DMAR_ACCEPT,
+        rcx: function_id,
+        rdx: target,
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(()),
+        _ => Err(output.rax),
+    }
+}
+
+/// Issue a TDG.MMIO.ACCEPT call.
+pub fn tdcall_mmio_accept(
+    call: &mut impl Tdcall,
+    ept_mapping_info: u64,
+    mmio_page_offset: u64,
+) -> Result<(), TdCallResult> {
+    let input = TdcallInput {
+        leaf: TdCallLeaf::MMIO_ACCEPT,
+        rcx: ept_mapping_info,
+        rdx: mmio_page_offset,
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(()),
+        _ => Err(output.rax),
+    }
+}
+
+/// Issues a TDCM.* call
+pub fn tdcall_tdcm_service(
+    call: &mut impl Tdcall,
+    input_gpa: u64,
+    output_gpa: u64,
+    wait_for_interrupt: bool,
+) -> Result<(), TdCallResult> {
+    let mut vector: u64 = 0;
+    let mut timeout: u64 = 0;
+    if wait_for_interrupt {
+        // Setting some namesake values to satisfy hypervisor logic.
+        // TDX TODO: Find an alternative to this method.
+        vector = 22;
+        timeout = 10 * 1000 * 1000 * 300; // 300 seconds
+    }
+    let input = TdcallInput {
+        leaf: TdCallLeaf::VP_VMCALL,
+        rcx: 0xff00, // pass R10-R15
+        rdx: 0,
+        r8: 0,
+        r9: 0,
+        r10: 0, // must be 0 for ghci call
+        r11: TdVmCallSubFunction::TdcmService as u64,
+        r12: input_gpa,
+        r13: output_gpa,
+        r14: vector,
+        r15: timeout,
+    };
+
+    let output = call.tdcall(input);
+
+    if wait_for_interrupt {
+        // Wait for sint
+    }
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(()),
+        _ => Err(output.rax),
+    }
+}
+

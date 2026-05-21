@@ -65,6 +65,7 @@ vm_resource::register_static_resolvers! {
     // VPCI devices
     #[cfg(feature = "nvme")]
     nvme::resolver::NvmeControllerResolver,
+    // Add a resolver for generic vpci devices.  ?
 }
 
 // Mesh workers.

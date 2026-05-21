@@ -106,7 +106,10 @@ impl PartitionInfo {
             },
             cmdline: ArrayString::new_const(),
             com3_serial_available: false,
-            memory_allocation_mode: MemoryAllocationMode::Host,
+            memory_allocation_mode: MemoryAllocationMode::Host {
+                memory_size: None,
+                mmio_size: None,
+            },
             entropy: None,
             vtl0_alias_map: None,
             nvme_keepalive: false,

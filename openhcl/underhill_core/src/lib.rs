@@ -170,6 +170,7 @@ pub fn main() -> anyhow::Result<()> {
     let mut tracing = init_tracing_backend(tracing_driver.clone())?;
     // Initialize tracing from the backend.
     init_tracing(tracing_driver, tracing.tracer()).context("failed to init tracing")?;
+    tracing::info!("underhill_core: Tracing started");
     DefaultPool::run_with(|driver| do_main(driver, tracing))
 }
 
@@ -190,7 +191,7 @@ fn install_task_name_panic_hook() {
 
 async fn do_main(driver: DefaultDriver, mut tracing: TracingBackend) -> anyhow::Result<()> {
     let opt = Options::parse(Vec::new(), Vec::new())?;
-
+    tracing::info!("{:?}", opt.hide_isolation);
     let crate_name = build_info::get().crate_name();
     let crate_revision = build_info::get().scm_revision();
     tracing::info!(CVM_ALLOWED, ?crate_name, ?crate_revision, "VMM process");

@@ -5501,6 +5501,7 @@ dependencies = [
  "pal_async",
  "pcie_remote_resources",
  "prost",
+ "rpb_resources",
  "rustyline",
  "scsidisk_resources",
  "serial_16550_resources",
@@ -6099,6 +6100,7 @@ dependencies = [
  "pipette_client",
  "powershell_builder",
  "prost",
+ "rpb_resources",
  "safe_intrinsics",
  "scsidisk_resources",
  "serde",
@@ -6667,6 +6669,16 @@ name = "roxmltree"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
+
+[[package]]
+name = "rpb_resources"
+version = "0.0.0"
+dependencies = [
+ "guid",
+ "inspect",
+ "mesh",
+ "vm_resource",
+]
 
 [[package]]
 name = "rsa"
@@ -8432,6 +8444,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.16",
+ "tracing",
  "vtl2_settings_proto",
 ]
 
@@ -8501,6 +8514,7 @@ dependencies = [
  "loader",
  "loader_defs",
  "local_clock",
+ "log",
  "mana_driver",
  "mem_profile_tracing",
  "memory_range",
@@ -8524,6 +8538,7 @@ dependencies = [
  "pal_uring",
  "parking_lot",
  "profiler_worker",
+ "rpb_resources",
  "safe_intrinsics",
  "scsi_buffers",
  "scsi_core",

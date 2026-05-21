@@ -93,6 +93,7 @@ disk_vhdmp.workspace = true
 powershell_builder.workspace = true
 vmsocket.workspace = true
 windows-version.workspace = true
+rpb_resources.workspace = true
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hvdef.workspace = true

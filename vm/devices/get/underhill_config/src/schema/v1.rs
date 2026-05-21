@@ -491,7 +491,7 @@ impl ParseSchema<crate::NicDevice> for NicDevice {
         _errors: &mut ParseErrors<'_>,
     ) -> Result<crate::NicDevice, ParsingStopped> {
         let instance_id = parse_instance_id(&self.instance_id)?;
-
+        tracing::info!("Parsing Nic Device");
         Ok(crate::NicDevice {
             instance_id,
             subordinate_instance_id: None,
@@ -506,7 +506,7 @@ impl ParseSchema<crate::NicDevice> for NicAcceleration {
         _errors: &mut ParseErrors<'_>,
     ) -> Result<crate::NicDevice, ParsingStopped> {
         let instance_id = parse_instance_id(&self.instance_id)?;
-
+        tracing::info!("Parsing Nic Acceleration");
         let subordinate_instance_id = parse_instance_id(&self.subordinate_instance_id)?;
         let subordinate_instance_id =
             (subordinate_instance_id != Guid::ZERO).then_some(subordinate_instance_id);
@@ -540,6 +540,7 @@ impl ParseSchema<crate::Vtl2SettingsDynamic> for Vtl2SettingsDynamic {
         let mut ide_controller = None;
         let mut scsi_controllers = Vec::new();
         let mut nvme_controllers = Vec::new();
+        //let mut rpb_controllers = Vec::new();
 
         for controller in &self.storage_controllers {
             match controller.protocol() {
@@ -611,7 +612,15 @@ impl ParseSchema<crate::Vtl2SettingsDynamic> for Vtl2SettingsDynamic {
             .iter()
             .flat_map(|nic| nic.parse(errors).collect_error(errors))
             .collect();
-
+        // tracing::error!(nic_devices);
+        /*
+        rpb_controllers = self
+            .vpci_devices
+            .iter()
+            .flat_map(|vpci| vpci.parse(errors).collect_error(errors))
+            .collect();
+        // tracing::error!(nic_devices);
+        */
         Ok(crate::Vtl2SettingsDynamic {
             ide_controller,
             scsi_controllers,

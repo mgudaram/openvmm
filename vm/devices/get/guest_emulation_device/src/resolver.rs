@@ -219,6 +219,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                 .map(IgvmAgentTestSetting::TestConfig),
             resource.test_gsp_by_id,
         );
+        tracing::info!("{:?}", device.vmbus_redirection);
         Ok(SimpleDeviceWrapper::new(input.driver_source.simple(), device).into())
     }
 }

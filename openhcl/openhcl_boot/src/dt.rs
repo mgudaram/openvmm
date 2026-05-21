@@ -3,7 +3,7 @@
 
 //! Module used to write the device tree used by the OpenHCL kernel and
 //! usermode.
-
+use crate::boot_logger::log;
 use crate::host_params::COMMAND_LINE_SIZE;
 use crate::host_params::PartitionInfo;
 use crate::host_params::shim_params::IsolationType;
@@ -132,6 +132,7 @@ fn write_vmbus<'a, T>(
         .add_u32(p_vmbus_connection_id, vmbus.connection_id)?;
 
     let mut mmio_ranges = ArrayVec::<u64, 6>::new();
+    log!("vmbus.mmio: {:x?}", vmbus.mmio);
     for entry in vmbus.mmio.iter() {
         mmio_ranges
             .try_extend_from_slice(&[entry.start(), entry.start(), entry.len()])
@@ -463,7 +464,7 @@ pub fn write_dt(
             None
         },
     };
-
+    log!("vmbus_vtl2: {:x?}", partition_info.vmbus_vtl2);
     simple_bus_builder = write_vmbus(
         simple_bus_builder,
         "vmbus",
@@ -520,11 +521,27 @@ pub fn write_dt(
     openhcl_builder = openhcl_builder.add_str(p_isolation_type, isolation_type)?;
 
     // Indicate what kind of memory allocation mode was done by the bootloader
-    // to usermode.
+    // to usermode
+    log!(
+        "allocation_mode: {:?}",
+        partition_info.memory_allocation_mode
+    );.
     let p_memory_allocation_mode = openhcl_builder.add_string("memory-allocation-mode")?;
     match partition_info.memory_allocation_mode {
-        MemoryAllocationMode::Host => {
+        MemoryAllocationMode::Host {
+            memory_size: _,
+            mmio_size,
+        }=> {
+            //let p_memory_size = openhcl_builder.add_string("memory-size")?;
+            let p_mmio_size = openhcl_builder.add_string("mmio-size")?;
             openhcl_builder = openhcl_builder.add_str(p_memory_allocation_mode, "host")?;
+            //if let Some(memory_size) = memory_size {
+            //    openhcl_builder = openhcl_builder.add_u64(p_memory_size, memory_size)?;
+            //}
+            if let Some(mmio_size) = mmio_size {
+                openhcl_builder = openhcl_builder.add_u64(p_mmio_size, mmio_size)?;
+                log!("openhcl_builder mmio_size: {:x?}", mmio_size);
+            }
         }
         MemoryAllocationMode::Vtl2 {
             memory_size,
@@ -591,6 +608,7 @@ pub fn write_dt(
         }
     }
 
+    log!("Adding VTl0 and Vtl2 mmio ranges:");
     // Add mmio ranges for both VTL0 and VTL2.
     for entry in &partition_info.vmbus_vtl0.mmio {
         let name = format_fixed!(64, "memory@{:x}", entry.start());
@@ -600,6 +618,7 @@ pub fn write_dt(
             .add_u64_array(p_reg, &[entry.start(), entry.len()])?
             .add_u32(p_openhcl_memory, MemoryVtlType::VTL0_MMIO.0)?
             .end_node()?;
+         log!("vtl0: {:x?} - {:x?}", entry.start(), entry.len());
     }
 
     for entry in &partition_info.vmbus_vtl2.mmio {
@@ -610,6 +629,7 @@ pub fn write_dt(
             .add_u64_array(p_reg, &[entry.start(), entry.len()])?
             .add_u32(p_openhcl_memory, MemoryVtlType::VTL2_MMIO.0)?
             .end_node()?;
+        log!("vtl2: {:x?} - {:x?}", entry.start(), entry.len());
     }
 
     // Report accepted ranges underhil openhcl node.

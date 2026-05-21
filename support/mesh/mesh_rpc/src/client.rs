@@ -121,7 +121,7 @@ impl ClientBuilder {
     pub fn new() -> Self {
         Self {
             // Use the gRPC default.
-            retry_timeout: Duration::from_secs(20),
+            retry_timeout: Duration::from_secs(2000),
         }
     }
 

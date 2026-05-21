@@ -16,7 +16,8 @@ use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_PARTITION_RAM_RANGES;
 use crate::host_params::MAX_VTL2_RAM_RANGES;
 use crate::host_params::dt::dma_hint::pick_private_pool_size;
-use crate::host_params::mmio::select_vtl2_mmio_range;
+use crate::host_params::mmio::select_vtl2_mmio_high_range;
+use crate::host_params::mmio::select_vtl2_mmio_low_range;
 use crate::host_params::shim_params::IsolationType;
 use crate::memory::AddressSpaceManager;
 use crate::memory::AddressSpaceManagerBuilder;
@@ -552,7 +553,10 @@ fn topology_from_host_dt(
 
     let memory_allocation_mode = parsed.memory_allocation_mode;
     match memory_allocation_mode {
-        MemoryAllocationMode::Host => {
+        MemoryAllocationMode::Host {
+            memory_size: _,
+            mmio_size: _,
+        } => {
             vtl2_ram
                 .try_extend_from_slice(parse_host_vtl2_ram(params, &parsed.memory).as_ref())
                 .expect("vtl2 ram should only be 64 big");
@@ -592,8 +596,8 @@ fn topology_from_host_dt(
         // of the host provided value inside the openhcl node and the calculated
         // default.
         let host_provided_size = match parsed.memory_allocation_mode {
+            MemoryAllocationMode::Host { mmio_size, .. } => mmio_size.unwrap_or(0),
             MemoryAllocationMode::Vtl2 { mmio_size, .. } => mmio_size.unwrap_or(0),
-            _ => 0,
         };
         let vmbus_vtl2 = parsed.vmbus_vtl2.as_ref().ok_or(DtError::Vtl2Vmbus)?;
         let vmbus_vtl2_mmio_size = vmbus_vtl2.mmio.iter().map(|r| r.len()).sum::<u64>();
@@ -618,26 +622,18 @@ fn topology_from_host_dt(
         } else {
             // Allocate vtl2 mmio from vtl0 mmio.
             log::info!("no vtl2 mmio provided by host, allocating from vtl0 mmio");
-            let selected_vtl2_mmio = select_vtl2_mmio_range(&vmbus_vtl0.mmio, mmio_size)?;
+            let mut selected_vtl2_mmio = ArrayVec::<MemoryRange, 2>::new();
+            selected_vtl2_mmio.push(select_vtl2_mmio_low_range(mmio, mmio_size)?);
+            selected_vtl2_mmio.push(select_vtl2_mmio_high_range(mmio, mmio_size)?);
 
             // Update vtl0 mmio to exclude vtl2 mmio.
-            let vtl0_mmio = subtract_ranges(vmbus_vtl0.mmio.iter().cloned(), [selected_vtl2_mmio])
+            let vtl0_mmio = subtract_ranges(mmio.iter().cloned(), selected_vtl2_mmio.iter().cloned())
                 .collect::<ArrayVec<MemoryRange, 2>>();
-            let vtl2_mmio = [selected_vtl2_mmio]
+            let vtl2_mmio = selected_vtl2_mmio
                 .into_iter()
                 .collect::<ArrayVec<MemoryRange, 2>>();
 
-            // TODO: For now, if we have only a single vtl0_mmio range left,
-            // panic. In the future decide if we want to report this as a start
-            // failure in usermode, change allocation strategy, or something
-            // else.
-            assert_eq!(
-                vtl0_mmio.len(),
-                2,
-                "vtl0 mmio ranges are not 2 {:#x?}",
-                vtl0_mmio
-            );
-
+            log!("{:x?}", vtl0_mmio);
             log::info!("vtl0 mmio: {vtl0_mmio:x?}, vtl2 mmio: {vtl2_mmio:x?}");
 
             (vtl0_mmio, vtl2_mmio)
@@ -658,7 +654,7 @@ fn topology_from_host_dt(
                 .clone(),
         )
     };
-
+    log!("vtl0_mmio: {:x?}, vtl2_mmio: {:x?}", vtl0_mmio, vtl2_mmio);
     // The host provided device tree is marked as normal ram, as the
     // bootshim is responsible for constructing anything usermode needs from
     // it, and passing it via the device tree provided to the kernel.
@@ -834,7 +830,13 @@ fn topology_from_persisted_state(
     //
     // FUTURE: When VTL2 itself did allocation, we should verify that all ranges
     // are still within the provided memory map.
-    if matches!(memory_allocation_mode, MemoryAllocationMode::Host) {
+    if matches!(
+        memory_allocation_mode,
+        MemoryAllocationMode::Host {
+            memory_size: _,
+            mmio_size: _,
+        }
+    ) {
         let host_vtl2_ram = parse_host_vtl2_ram(params, &parsed.memory);
         assert_eq!(
             vtl2_ram.as_slice(),
@@ -975,6 +977,20 @@ fn read_persisted_region_header(params: &ShimParams) -> Option<PersistedStateHea
 }
 
 impl PartitionInfo {
+        pub fn read_com3_serial(params: &ShimParams) -> Result<bool, DtError> {
+        let dt = params.device_tree();
+
+        if dt[0] == 0 {
+            log!("host did not provide a device tree");
+            return Err(DtError::NoDeviceTree);
+        }
+        let mut dt_storage = off_stack!(ParsedDt, ParsedDeviceTree::new());
+
+        let parsed = ParsedDeviceTree::parse(dt, &mut *dt_storage).map_err(DtError::DeviceTree)?;
+
+        Ok(parsed.com3_serial)
+    }
+
     // Read the IGVM provided DT for the vtl2 partition info.
     pub fn read_from_dt<'a>(
         params: &'a ShimParams,

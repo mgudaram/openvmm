@@ -172,7 +172,7 @@ fn build_kernel_command_line(
         // RELIABILITY: Panic on receiving an NMI.
         "unknown_nmi_panic=1",
         // Use vfio for MANA devices.
-        "vfio_pci.ids=1414:00ba",
+        "vfio_pci.ids=1414:00ba,8086:0d52", // add rpb related ids 8086:0d52? 7862:00:00.0
         // WORKAROUND: Enable no-IOMMU mode. This mode provides no device isolation,
         // and no DMA translation.
         "vfio.enable_unsafe_noiommu_mode=1",
@@ -589,6 +589,16 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         AddressSpaceManager,
         AddressSpaceManager::new_const()
     ));
+    let com3_serial = match PartitionInfo::read_com3_serial(&p) {
+        Ok(val) => val,
+        Err(e) => panic!("unable to capture serial logging state {}", e),
+    };
+
+    // Enable logging ASAP. This is fine even when isolated, as we don't have
+    // any access to secrets in the boot shim.
+    boot_logger_runtime_init(p.isolation_type, com3_serial);
+    log!("openhcl_boot: logging enabled");
+
     let partition_info = match PartitionInfo::read_from_dt(
         &p,
         &mut dt_storage,
@@ -600,10 +610,13 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         Err(e) => panic!("unable to read device tree params {:?}", e),
     };
 
-    // Enable logging ASAP. This is fine even when isolated, as we don't have
-    // any access to secrets in the boot shim.
-    boot_logger_runtime_init(p.isolation_type, partition_info.com3_serial_available);
-    log::info!("openhcl_boot: logging enabled");
+    log!(
+        "PartitionInfo: {:x?}, {:x?}, {:x?}, {:x?}",
+        partition_info.memory_allocation_mode,
+        partition_info.vmbus_vtl0,
+        partition_info.vmbus_vtl2,
+        partition_info.vtl2_ram
+    );
 
     // Confidential debug will show up in boot_options only if included in the
     // static command line, or if can_trust_host is true (so the dynamic command
@@ -647,6 +660,16 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     if partition_info.cpus.is_empty() {
         panic!("no cpus");
     }
+        log!("memory_start_address: {:x}", p.memory_start_address);
+    log!(
+        "vtl2_reserved_region_start: {:x}",
+        p.vtl2_reserved_region_start
+    );
+    log!(
+        "vtl2_reserved_region_size: {:x}",
+        p.vtl2_reserved_region_size
+    );
+    log!("boot_shim_params: {:x?}", p);
 
     validate_vp_hw_ids(partition_info);
 
@@ -934,7 +957,10 @@ mod test {
             com3_serial_available: false,
             gic: None,
             pmu_gsiv: None,
-            memory_allocation_mode: host_fdt_parser::MemoryAllocationMode::Host,
+            memory_allocation_mode: host_fdt_parser::MemoryAllocationMode::Host {
+                memory_size: None,
+                mmio_size: None,
+            },
             entropy: None,
             vtl0_alias_map: None,
             nvme_keepalive: false,

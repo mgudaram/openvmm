@@ -119,6 +119,8 @@ use pal_async::DefaultPool;
 use pal_async::local::LocalDriver;
 use pal_async::task::Spawn;
 use parking_lot::Mutex;
+use rpb_resources::RpbControllerHandle;
+use rpb_resources::resolver::RpbResolver;
 use scsi_core::ResolveScsiDeviceHandleParams;
 use scsidisk::atapi_scsi::AtapiScsiDisk;
 use socket2::Socket;
@@ -159,6 +161,7 @@ use vm_resource::ResourceResolver;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::KeyboardInputHandleKind;
 use vm_resource::kind::MouseInputHandleKind;
+use vm_resource::kind::PciDeviceHandleKind;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::memory::MemoryRangeWithNode;
 use vm_topology::processor::ProcessorTopology;
@@ -210,6 +213,10 @@ struct GuestEmulationTransportInfra {
     get_thread: JoinHandle<()>,
     get_spawner: DefaultDriver,
     get_client: GuestEmulationTransportClient,
+}
+
+vm_resource::register_static_resolvers! {
+    RpbResolver,
 }
 
 async fn construct_get()
@@ -382,7 +389,7 @@ impl Worker for UnderhillVmWorker {
         pal_async::local::block_with_io(async |driver| {
             let (get_infra, get_watchdog_task) = construct_get().await?;
             let get_client = get_infra.get_client.clone();
-
+            tracing::info!("UnderhillVmWorker: Here");
             let result = Self::new_or_restart(get_infra, params, true, None, driver).await;
 
             if let Err(err) = &result {
@@ -653,6 +660,8 @@ async fn read_device_platform_settings(
 
     // TODO: figure out if we really need to trace this. These are too long for
     // the Underhill trace buffer.
+    // TDX HACK : update this from the vmms
+    // dps.general.vmbus_redirection_enabled = true;
     tracing::debug!("device platform settings {:?}", dps);
 
     Ok(dps)
@@ -819,7 +828,8 @@ impl UhVmNetworkSettings {
             .max_sub_channels
             .unwrap_or(MAX_SUBCHANNELS_PER_VNIC)
             .min(vps_count as u16);
-
+        tracing::info!("new_underhill_nic");
+        
         let allocation_visibility = if is_isolated {
             AllocationVisibility::Shared
         } else {
@@ -1016,6 +1026,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
             subordinate_instance_id,
             max_sub_channels,
         };
+        tracing::info!("{:x?}", nic_config);
 
         let driver_source = VmTaskDriverSource::new(ThreadpoolBackend::new(threadpool.clone()));
         let save_state = self
@@ -1464,7 +1475,8 @@ async fn new_underhill_vm(
             tracing::info!(CVM_ALLOWED, kernel_boot_time_ns, "kernel boot time");
         }
     }
-
+    //tracing::info!("{:?}", dps);
+    //tracing::info!("{:?}", env_cfg);
     // Read the initial configuration from the IGVM parameters.
     let (runtime_params, measured_vtl2_info) =
         crate::loader::vtl2_config::read_vtl2_params().context("failed to read load parameters")?;
@@ -2205,7 +2217,8 @@ async fn new_underhill_vm(
     // Smaller VMs have lower performance targets than larger VMs,
     // so they don't need as high a QD.
     let default_io_queue_depth = (8 * processor_topology.vp_count()).min(256);
-
+    tracing::info!("Building InitialControllers\n");
+    
     let controllers = InitialControllers::new(
         &uevent_listener,
         &dps,
@@ -3229,6 +3242,36 @@ async fn new_underhill_vm(
                     sub_system_id: None,
                 });
 
+                // Add RPB card as allowed device.
+                /* From PCI config space read of RPB card:
+                !pci 1c5 b8 0 0
+                PCI Configuration Space (Segment:0000 Bus:b8 Device:00 Function:00)
+                Common Header:
+                    00: VendorID       8086 Intel Corporation
+                    02: DeviceID       0d52
+                    04: Command        0540 PERREn SERREn InterruptDis
+                    06: Status         0010 CapList
+                    08: RevisionID     02
+                    09: ProgIF         00
+                    0a: SubClass       00
+                    0b: BaseClass      ff
+                    0c: CacheLineSize  0000
+                    0d: LatencyTimer   00
+                */
+                let dev = AllowedDevice {
+                    vendor_id: Some(0x8086),
+                    device_id: Some(0x0d5),
+                    revision_id: Some(0x02),
+                    prog_if: Some(ProgrammingInterface::NONE),
+                    sub_class: Some(Subclass::NONE),
+                    base_class: Some(ClassCode::UNASSIGNED),
+                    sub_vendor_id: None,
+                    sub_system_id: None,
+                };
+                tracing::info!("{:x?}", dev);
+                relay.add_allowed_device(dev);
+
+
                 // Allow MANA devices.
                 relay.add_allowed_device(AllowedDevice {
                     vendor_id: Some(gdma_defs::VENDOR_ID),
@@ -3317,21 +3360,26 @@ async fn new_underhill_vm(
             );
         }
     }
-
+    //tracing::info!("Vpci feature status");
     // VPCI
     //
     // Use a cfg block instead of an if(cfg!) because the compiler does a bad
     // job eliminating the dead code.
     #[cfg(feature = "vpci")]
     {
+        tracing::info!("VPCI feature enabled");
         use virt::Hv1;
         use vmcore::vpci_msi::VpciInterruptMapper;
+
+        // Not needed
+        // resolver.add_async_resolver::<PciDeviceHandleKind, _, RpbControllerHandle, _>(RpbResolver);
 
         for crate::dispatch::vtl2_settings_worker::UhVpciDeviceConfig {
             instance_id,
             resource,
         } in controllers.vpci_devices
         {
+            tracing::info!("VPCI instanceId: {:?} resource {:?}", instance_id, resource);
             let vmbus = vmbus_server
                 .as_ref()
                 .context("vpci devices require vmbus redirection to be enabled")?;
@@ -3352,6 +3400,7 @@ async fn new_underhill_vm(
                         .context("vpci is not supported by this hypervisor")?
                         .build(Vtl::Vtl0, device_id)?;
                     let device = Arc::new(device);
+                    tracing::info!("Created a new device here");
                     Ok((device.clone(), VpciInterruptMapper::new(device)))
                 },
                 vtom,

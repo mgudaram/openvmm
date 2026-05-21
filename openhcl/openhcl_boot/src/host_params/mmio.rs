@@ -4,6 +4,7 @@
 //! Manages MMIO range partitioning between VTLs.
 
 use super::dt::DtError;
+use crate::boot_logger::log;
 use memory_range::MemoryRange;
 
 /// The start address of MMIO high range.
@@ -26,7 +27,7 @@ const MMIO_HIGH_RANGE_START: u64 = 1 << 32;
 /// Returns an error if the input VTL0 MMIO range is invalid or if the VTL2
 /// allocation amount was not satisfied due to a lack of high MMIO assigned
 /// to VTL0.
-pub fn select_vtl2_mmio_range(
+pub fn select_vtl2_mmio_high_range(
     mmio: &[MemoryRange],
     vtl2_size: u64,
 ) -> Result<MemoryRange, DtError> {
@@ -40,12 +41,55 @@ pub fn select_vtl2_mmio_range(
 
         // Compute the length of the VTL2 subrange. If there is not enough
         // mmio, give up.
+         log!(
+            "select_vtl2_mmio_high_range: mmio: {:x?} vtl2_size: {:x?}",
+            range.len(),
+            vtl2_size
+        );
         if range.len() < vtl2_size {
             return Err(DtError::NotEnoughVtl0Mmio);
         }
 
+        let end = range.end();
         let vtl2_range_start = range.end() - vtl2_size;
+        log!("vtl2_mmio_range: {vtl2_range_start:x}..{end:x}");
+        return Ok(MemoryRange::new(vtl2_range_start..range.end()));
+    }
 
+    Err(DtError::NotEnoughMmio)
+}
+
+/// Select the mmio range that VTL2 should use from looking at VTL0 mmio
+/// ranges.
+///
+/// On success, returns the mmio that VTL2 should use.
+///
+/// Returns an error if the input VTL0 MMIO range is invalid or if the VTL2
+/// allocation amount was not satisfied due to a lack of high MMIO assigned
+/// to VTL0.
+pub fn select_vtl2_mmio_low_range(
+    mmio: &[MemoryRange],
+    vtl2_size: u64,
+) -> Result<MemoryRange, DtError> {
+    // Iterate over the list of MMIO ranges in reverse address order so that
+    // the VTL2 range is carved out from the end.
+    for range in mmio.iter() {
+        log!("current range: {:x?} len {:x?}", range, range.len());
+        if range.len() < vtl2_size {
+            continue;
+        }
+        // Compute the length of the VTL2 subrange. If there is not enough
+        // mmio, give up.
+        log!(
+            "select_vtl2_mmio_low_range: mmio: {:x?} vtl2_size: {:x?}",
+            range.len(),
+            vtl2_size
+        );
+
+        let end = range.end();
+
+        let vtl2_range_start = range.end() - vtl2_size;
+        log!("vtl2_mmio_range: {vtl2_range_start:x}..{end:x}");
         return Ok(MemoryRange::new(vtl2_range_start..range.end()));
     }
 

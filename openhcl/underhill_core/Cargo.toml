@@ -76,6 +76,7 @@ kmsg_defs.workspace = true
 kmsg_writer.workspace = true
 hcl.workspace = true
 mana_driver.workspace = true
+rpb_resources.workspace = true
 net_backend.workspace = true
 net_backend_resources.workspace = true
 net_packet_capture.workspace = true
@@ -189,7 +190,7 @@ aarch64defs.workspace = true
 
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
 firmware_pcat.workspace = true
-
+log.workspace = true
 [dev-dependencies]
 guest_emulation_transport = { workspace = true, features = ["test_utilities"] }
 test_with_tracing.workspace = true

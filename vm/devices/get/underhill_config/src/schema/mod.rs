@@ -111,6 +111,7 @@ impl crate::Vtl2Settings {
                     );
                 }
                 NAMESPACE_NETWORK_ACCELERATION => {
+                    tracing::info!("Network Acceleration parsing");
                     let settings: Vtl2SettingsNetworkAcceleration = Self::read(&chunk.settings)?;
                     nic_acceleration = Some(
                         settings

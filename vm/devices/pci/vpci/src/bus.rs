@@ -276,7 +276,7 @@ impl MmioIntercept for VpciBusDevice {
 
         // Remove vtom, as the guest may access it with or without set.
         let addr = addr & !self.vtom.unwrap_or(0);
-
+        // Need to peform TDX MMIO emulation here.
         let reg = match self.register(addr, data.len()) {
             Ok(reg) => reg,
             Err(err) => return IoResult::Err(err),

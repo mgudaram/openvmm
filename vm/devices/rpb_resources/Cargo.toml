@@ -1,0 +1,38 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "rpb_resources"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+vm_resource.workspace = true
+
+inspect.workspace = true
+mesh.workspace = true
+# guid = { workspace = true, features = ["mesh"] }
+guid.workspace = true
+
+anyhow.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+pal_event.workspace = true
+pal_async.workspace = true
+
+device_emulators.workspace = true
+pci_core.workspace = true
+pci_resources.workspace = true
+virtio_resources.workspace = true
+virtio.workspace = true
+
+chipset_device.workspace = true
+guestmem.workspace = true
+vmcore.workspace = true
+fs-err.workspace = true
+
+[lints]
+workspace = true

@@ -40,6 +40,11 @@ open_enum! {
         MEM_PAGE_ATTR_WR = 24,
         VP_ENTER = 25,
         VP_INVGLA = 27,
+        TDI_VALIDATE = 66,
+        TDI_RD = 67,
+        TDI_START = 68,
+        DMAR_ACCEPT = 70,
+        MMIO_ACCEPT = 71,
     }
 }
 
@@ -206,6 +211,7 @@ pub enum TdVmCallSubFunction {
     RdMsr = 0x1f,
     WrMsr = 0x20,
     MapGpa = 0x10001,
+    TdcmService = 0x10005,
 }
 
 open_enum! {

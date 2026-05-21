@@ -115,6 +115,11 @@ pub fn compute_variable_mtrrs(
 ) -> Result<Vec<X86Register>, UnsupportedMmio> {
     const WRITEBACK: u64 = 0x6;
 
+    // TDX TODO: Currently L2 boot fails here. because only mmio_gap_low is created.
+    // Cannot have only 1 MMIO region, otherwise, during PlatformPei setup (in VBIOS) for L2 guest, the boot fails signaling incorrect configuration.
+    // Hinting at the need for appropriate Mtrr settings.
+    // The way to fix this would be to update the initial memory settings
+    // and increase the VTL mmio spaces so that 2 mmio regions are created for VTL0 as well.
     let &[mmio_gap_low, mmio_gap_high] = memory.mmio().try_into().map_err(|_| UnsupportedMmio)?;
 
     // Clamp the width to something reasonable.

@@ -61,7 +61,7 @@ vm_manifest_builder.workspace = true
 vm_resource.workspace = true
 vtl2_settings_proto.workspace = true
 pcie_remote_resources.workspace = true
-
+rpb_resources.workspace = true
 clap_dyn_complete.workspace = true
 console_relay.workspace = true
 crypto = { workspace = true, optional = true }

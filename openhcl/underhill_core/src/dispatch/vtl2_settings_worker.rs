@@ -25,6 +25,7 @@ use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
+use rpb_resources::RpbControllerHandle;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
 use scsidisk_resources::SimpleScsiDvdRequest;
@@ -58,6 +59,8 @@ use vm_resource::Resource;
 use vm_resource::ResourceResolver;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::PciDeviceHandleKind;
+use vm_resource::kind::RpbDeviceHandle;
+use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vmcore::vm_task::VmTaskDriverSource;
 
@@ -911,6 +914,7 @@ pub struct UhScsiControllerConfig {
 }
 
 #[cfg_attr(not(feature = "vpci"), expect(dead_code))]
+#[derive(Debug)]
 pub struct UhVpciDeviceConfig {
     pub instance_id: Guid,
     pub resource: Resource<PciDeviceHandleKind>,
@@ -1508,6 +1512,14 @@ pub async fn create_storage_controllers_from_vtl2_settings(
         );
     }
 
+    
+    // Pushing the RPB device as a VPCI device.
+    for rpb_controller in &settings.nic_devices {
+        let rpb = make_rpb_controller_config(ctx, uevent_listener, rpb_controller).await?;
+        nvme_controllers.push(rpb);
+    }
+    
+
     Ok((ide_controller, scsi_controllers, nvme_controllers))
 }
 
@@ -1707,7 +1719,7 @@ pub async fn wait_for_mana(
     instance_id: &Guid,
 ) -> anyhow::Result<String> {
     let (pci_id, devpath) = vpci_path(instance_id);
-
+    // let devpath2 = PathBuf::from(format!("/sys/bus/vmbus/devices/{instance_id}"));
     // Wait for the device to show up.
     uevent_listener
         .wait_for_devpath(&devpath)
@@ -1719,7 +1731,7 @@ pub async fn wait_for_mana(
     wait_for_pci_path(&pci_id)
         .instrument(tracing::info_span!("waiting for device in pci", pci_id))
         .await;
-
+    //wait_for_pci_path(&pci_id).await;
     // Validate the device and vendor.
     let vendor = fs_err::read_to_string(devpath.join("vendor"))?;
     let device = fs_err::read_to_string(devpath.join("device"))?;
@@ -1739,20 +1751,101 @@ pub async fn get_mana_config_from_vtl2_settings(
     settings: &Vtl2SettingsDynamic,
 ) -> anyhow::Result<Vec<NicConfig>> {
     let mut mana = Vec::<NicConfig>::new();
+    tracing::info!("Getting MANA config");
     for config in &settings.nic_devices {
-        let pci_id = ctx
-            .until_cancelled(wait_for_mana(uevent_listener, &config.instance_id))
-            .await
-            .context("cancelled waiting for mana devices")??;
+        if (config.subordinate_instance_id == None) {
+            let pci_id = ctx
+                .until_cancelled(wait_for_mana(uevent_listener, &config.instance_id))
+                .await
+                .context("cancelled waiting for mana devices")??;
 
-        mana.push(NicConfig {
-            pci_id,
-            instance_id: config.instance_id,
-            subordinate_instance_id: config.subordinate_instance_id,
-            max_sub_channels: config.max_sub_channels,
-        });
+            mana.push(NicConfig {
+                pci_id,
+                instance_id: config.instance_id,
+                subordinate_instance_id: config.subordinate_instance_id,
+                max_sub_channels: config.max_sub_channels,
+            });
+            tracing::info!("mana instance: {:?}", mana);
+        } else {
+            /*
+            // Pushing the RPB card as a network device here will cause it
+            // to be seen as a gdma device. the corresponding gdms driver will be invoked and rpb card will be queried for the relevant information.
+            // In the current scenario of RPB card being a dummy device (as reflected by its class codes), the gdma driver flows will not proceed successfully. Hence, commenting this.
+            // If in future RPB card f/w is updated to show it as a n/w device then this flow could be enabled.
+            
+            const RPB_INSTANCE_ID: Guid = guid::guid!("a09c8c03-cccb-47f6-b6d5-7c3ef451eb5c");
+
+            let pci_id = async {
+                ctx.until_cancelled(wait_for_mana(uevent_listener, &config.instance_id))
+                    .await
+                    .context("cancelled waiting for RPB devices")?
+            }
+            .await
+            .map_err(|err| Error::NetworkingAddNicFailed(RPB_INSTANCE_ID, err))?;
+
+            tracing::error!(pci_id);
+
+            mana.push(NicConfig {
+                pci_id,
+                instance_id: config.instance_id,
+                subordinate_instance_id: config.subordinate_instance_id,
+                max_sub_channels: config.max_sub_channels,
+            });
+            */
+            // make_rpb_controller_config(ctx, uevent_listener, config);
+        }
     }
+    tracing::info!("mana instance: {:?}", mana);
     Ok(mana)
+}
+async fn wait_for_rpb(
+    uevent_listener: &UeventListener,
+    instance_id: &Guid,
+) -> anyhow::Result<String> {
+    let (pci_id, devpath) = vpci_path(instance_id);
+    tracing::info!("{:?} \n {:?}", pci_id, devpath);
+    //let devpath2 = PathBuf::from(format!("/sys/bus/vmbus/devices/{instance_id}"));
+    uevent_listener.wait_for_devpath(&devpath2).await?;
+    //uevent_listener.wait_for_devpath(&path).await?;
+    tracing::info!("Waiting for pci_path now");
+    wait_for_pci_path(&pci_id).await;
+    // Validate the device and vendor.
+    let vendor = fs_err::read_to_string(devpath.join("vendor"))?;
+    let device = fs_err::read_to_string(devpath.join("device"))?;
+    tracing::info!("vendor: {:x?} \n device: {:x?}", vendor, device);
+    if vendor.trim_end() != "0x8086" && vendor.trim_end() != "0x8086" {
+        anyhow::bail!("invalid mana vendor {vendor}");
+    }
+    if device.trim_end() != "0x0d52" && device.trim_end() != "0x0d52" {
+        anyhow::bail!("invalid mana device {device}");
+    }
+    Ok(pci_id)
+}
+
+async fn make_rpb_controller_config(
+    ctx: &mut CancelContext,
+    uevent_listener: &UeventListener,
+    controller: &NicDevice,
+) -> Result<UhVpciDeviceConfig, Vtl2SettingsErrorInfo> {
+    tracing::error!("In make_rpb_controller_config\n");
+    const RPB_INSTANCE_ID: Guid = guid::guid!("39f0eef7-8a89-40d8-9743-d9e4aa5d92f1");
+    let pci_id = async {
+        ctx.until_cancelled(wait_for_rpb(uevent_listener, &controller.instance_id))
+            .await
+            .context("cancelled waiting for RPB devices")?
+    }
+    .await
+    .map_err(|err| Error::NetworkingAddNicFailed(RPB_INSTANCE_ID, err))?;
+    // tracing::error!(pci_id);
+    Ok(UhVpciDeviceConfig {
+        instance_id: controller.instance_id,
+        resource: RpbControllerHandle {
+            instance_id: RPB_INSTANCE_ID,
+            pci_id,
+            //rpb_resource: RpbDeviceHandle { path: devpath },
+        }
+        .into_resource(),
+    })
 }
 
 trait HasInstanceId {
@@ -1833,6 +1926,7 @@ impl InitialControllers {
         default_io_queue_depth: u32,
         config_timeout_in_seconds: u64,
     ) -> anyhow::Result<Self> {
+        const VM_CONFIG_TIME_OUT_IN_SECONDS: u64 = 120;
         let mut context =
             CancelContext::new().with_timeout(Duration::from_secs(config_timeout_in_seconds));
 
@@ -1897,7 +1991,7 @@ impl InitialControllers {
                 c.handle.into_resource()
             })
             .collect();
-
+        tracing::info!("{:?}", vpci_devices);
         let cfg = InitialControllers {
             ide_controller,
             vmbus_devices,

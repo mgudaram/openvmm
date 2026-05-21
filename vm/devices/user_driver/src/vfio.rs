@@ -107,7 +107,8 @@ impl VfioDevice {
     ) -> anyhow::Result<Self> {
         let pci_id = pci_id.as_ref();
         let path = Path::new("/sys/bus/pci/devices").join(pci_id);
-
+        tracing::info!("pci_id:{:?} path:{:?}", pci_id, path);
+        
         // The vfio device attaches asynchronously after the PCI device is added,
         // so make sure that it has completed by checking for the vfio-dev subpath.
         let vmbus_device =
