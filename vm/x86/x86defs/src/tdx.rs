@@ -36,10 +36,12 @@ open_enum! {
         VM_WR = 8,
         VP_RD = 9,
         VP_WR = 10,
+        SYS_RD = 11,
         MEM_PAGE_ATTR_RD = 23,
         MEM_PAGE_ATTR_WR = 24,
         VP_ENTER = 25,
         VP_INVGLA = 27,
+        MEM_PAGE_RELEASE = 30,
     }
 }
 
@@ -65,6 +67,20 @@ impl TdgMemPageLevel {
     const fn into_bits(self) -> u64 {
         self as u64
     }
+}
+
+/// TDX_FEATURES0 capability bits.
+#[bitfield(u64)]
+#[allow(non_camel_case_types)]
+pub struct TDX_FEATURES0 {
+    #[bits(6)]
+    _reserved0: u8,
+    pub connect: bool,
+    #[bits(31)]
+    _reserved1: u32,
+    pub page_release: bool,
+    #[bits(25)]
+    _reserved2: u32,
 }
 
 /// Attributes for a single VM.
@@ -137,6 +153,19 @@ pub struct TdgMemPageGpaAttr {
 
 #[bitfield(u64)]
 pub struct TdgMemPageAcceptRcx {
+    #[bits(3)]
+    pub level: TdgMemPageLevel,
+    #[bits(9)]
+    pub reserved: u64,
+    /// The page number for this accept call.
+    #[bits(40)]
+    pub gpa_page_number: u64,
+    #[bits(12)]
+    pub reserved2: u64,
+}
+
+#[bitfield(u64)]
+pub struct TdgMemPageReleaseRcx {
     #[bits(3)]
     pub level: TdgMemPageLevel,
     #[bits(9)]
@@ -479,6 +508,9 @@ pub const TDX_FIELD_CODE_L2_CTLS_VM1: TdxExtendedFieldCode =
     TdxExtendedFieldCode(0xA020000300000051);
 pub const TDX_FIELD_CODE_L2_CTLS_VM2: TdxExtendedFieldCode =
     TdxExtendedFieldCode(0xA020000300000052);
+pub const TDX_FIELD_CODE_TD_FEATURES0: TdxExtendedFieldCode =
+    TdxExtendedFieldCode(0x0A00000300000008);
+
 
 /// Extended field code for TDG.VP.WR and TDG.VP.RD
 #[bitfield(u64)]

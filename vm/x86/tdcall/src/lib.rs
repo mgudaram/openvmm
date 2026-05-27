@@ -28,6 +28,7 @@ use x86defs::tdx::TdgMemPageAttrWriteR8;
 use x86defs::tdx::TdgMemPageAttrWriteRcx;
 use x86defs::tdx::TdgMemPageGpaAttr;
 use x86defs::tdx::TdgMemPageLevel;
+use x86defs::tdx::TdgMemPageReleaseRcx;
 use x86defs::tdx::TdxExtendedFieldCode;
 use x86defs::tdx::TdxGlaListInfo;
 
@@ -557,6 +558,31 @@ pub fn accept_pages<T: Tdcall>(
     Ok(())
 }
 
+/// Release pages from `range` using [`tdcall_mem_page_release`].
+pub fn release_pages<T: Tdcall>(
+    call: &mut T,
+    range: MemoryRange,
+) -> Result<(), TdCallResult> {
+    #[cfg(feature = "tracing")]
+    tracing_no_std::info!(%range, "tdcall_mem_page_release");
+    log::info!("release_pages: {range}");
+
+    let mut range = range;
+    while !range.is_empty() {
+        // Release in 4k size pages, if the page turns out to be larger, VMM will demote the page
+        match tdcall_mem_page_release(call, range.start_4k_gpn()) {
+            Ok(_) => {
+                range = MemoryRange::new(range.start() + HV_PAGE_SIZE..range.end());
+            }
+            Err(e) => {
+                return Err(e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Set page attributes from `range` using
 /// [`tdcall_page_attr_wr`].
 ///
@@ -740,6 +766,35 @@ pub fn tdcall_vp_rd(
     }
 }
 
+/// Issue a TDG.SYS.RD call.
+///
+/// `field_code` is the field code to use for the call.
+pub fn tdcall_sys_rd(
+    call: &mut impl Tdcall,
+    field_code: TdxExtendedFieldCode,
+) -> Result<u64, TdCallResult> {
+    let input = TdcallInput {
+        leaf: TdCallLeaf::SYS_RD,
+        rcx: 0,
+        rdx: field_code.into(),
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(output.r8),
+        _ => Err(output.rax),
+    }
+}
+
 /// Issue a TDG.VP.INVGLA call.
 pub fn tdcall_vp_invgla(
     call: &mut impl Tdcall,
@@ -750,6 +805,37 @@ pub fn tdcall_vp_invgla(
         leaf: TdCallLeaf::VP_INVGLA,
         rcx: gla_flags.into(),
         rdx: gla_info.into(),
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(()),
+        _ => Err(output.rax),
+    }
+}
+
+/// Issue a TDG.MEM.PAGE.RELEASE call.
+pub fn tdcall_mem_page_release(
+    call: &mut impl Tdcall,
+    gpa_page_number: u64,
+) -> Result<(), TdCallResult> {
+    let rcx = TdgMemPageReleaseRcx::new()
+        .with_gpa_page_number(gpa_page_number)
+        .with_level(TdgMemPageLevel::Size4k);
+
+    let input = TdcallInput {
+        leaf: TdCallLeaf::MEM_PAGE_RELEASE,
+        rcx: rcx.into(),
+        rdx: 0,
         r8: 0,
         r9: 0,
         r10: 0,

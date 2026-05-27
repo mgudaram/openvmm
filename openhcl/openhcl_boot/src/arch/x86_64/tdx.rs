@@ -17,11 +17,15 @@ use tdcall::AcceptPagesError;
 use tdcall::Tdcall;
 use tdcall::TdcallInput;
 use tdcall::TdcallOutput;
+use tdcall::release_pages;
 use tdcall::tdcall_hypercall;
 use tdcall::tdcall_map_gpa;
+use tdcall::tdcall_sys_rd;
 use tdcall::tdcall_wrmsr;
 use x86defs::X64_LARGE_PAGE_SIZE;
 use x86defs::tdx::RESET_VECTOR_PAGE;
+use x86defs::tdx::TDX_FEATURES0;
+use x86defs::tdx::TDX_FIELD_CODE_TD_FEATURES0;
 
 /// Writes a synthehtic register to tell the hypervisor the OS ID for the boot shim.
 fn report_os_id(guest_os_id: u64) {
@@ -130,6 +134,21 @@ pub fn accept_pages(range: MemoryRange) -> Result<(), AcceptPagesError> {
 /// Change the visibility of pages. Note that pages that were previously host
 /// visible and are now private, must be reaccepted.
 pub fn change_page_visibility(range: MemoryRange, host_visible: bool) {
+    if host_visible {
+        let tdx_features0 = TDX_FEATURES0::from(
+            tdcall_sys_rd(&mut TdcallInstruction, TDX_FIELD_CODE_TD_FEATURES0)
+                .expect("TDG.SYS.RD for TD_FEATURES0 should not fail"),
+        );
+
+        if tdx_features0.connect() && tdx_features0.page_release() {
+            if let Err(err) = release_pages(&mut TdcallInstruction, range) {
+                panic!(
+                    "failed to release pages for {range}, host_visible = {host_visible}: {err:?}"
+                );
+            }
+        }
+    }
+
     if let Err(err) = tdcall_map_gpa(&mut TdcallInstruction, range, host_visible) {
         panic!(
             "failed to change page visibility for {range}, host_visible = {host_visible}: {err:?}"
