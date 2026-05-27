@@ -82,6 +82,7 @@ fn tdcall(input: TdcallInput) -> TdcallOutput {
     //
     // SAFETY: Calling tdcall with the correct arguments. It is responsible for
     // argument validation and error handling.
+
     unsafe {
         asm! {
             "tdcall",

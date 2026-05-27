@@ -382,7 +382,7 @@ impl Worker for UnderhillVmWorker {
         pal_async::local::block_with_io(async |driver| {
             let (get_infra, get_watchdog_task) = construct_get().await?;
             let get_client = get_infra.get_client.clone();
-
+            tracing::info!("UnderhillVmWorker: Here");
             let result = Self::new_or_restart(get_infra, params, true, None, driver).await;
 
             if let Err(err) = &result {
@@ -819,7 +819,8 @@ impl UhVmNetworkSettings {
             .max_sub_channels
             .unwrap_or(MAX_SUBCHANNELS_PER_VNIC)
             .min(vps_count as u16);
-
+        tracing::info!("new_underhill_nic");
+        
         let allocation_visibility = if is_isolated {
             AllocationVisibility::Shared
         } else {
@@ -1016,6 +1017,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
             subordinate_instance_id,
             max_sub_channels,
         };
+        tracing::info!("{:x?}", nic_config);
 
         let driver_source = VmTaskDriverSource::new(ThreadpoolBackend::new(threadpool.clone()));
         let save_state = self
@@ -2209,7 +2211,8 @@ async fn new_underhill_vm(
     // Smaller VMs have lower performance targets than larger VMs,
     // so they don't need as high a QD.
     let default_io_queue_depth = (8 * processor_topology.vp_count()).min(256);
-
+    tracing::info!("Building InitialControllers\n");
+    
     let controllers = InitialControllers::new(
         &uevent_listener,
         &dps,
@@ -3338,6 +3341,7 @@ async fn new_underhill_vm(
     // job eliminating the dead code.
     #[cfg(feature = "vpci")]
     {
+        tracing::info!("VPCI feature enabled");
         use virt::Hv1;
         use vmcore::vpci_msi::VpciInterruptMapper;
 
@@ -3346,6 +3350,7 @@ async fn new_underhill_vm(
             resource,
         } in controllers.vpci_devices
         {
+            tracing::info!("VPCI instanceId: {:?} resource {:?}", instance_id, resource);
             let vmbus = vmbus_server
                 .as_ref()
                 .context("vpci devices require vmbus redirection to be enabled")?;
@@ -3369,6 +3374,7 @@ async fn new_underhill_vm(
                         .context("vpci is not supported by this hypervisor")?
                         .build(Vtl::Vtl0, device_id)?;
                     let device = Arc::new(device);
+                    tracing::info!("Created a new device here");
                     Ok((device.clone(), VpciInterruptMapper::new(device)))
                 },
                 vtom,

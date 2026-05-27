@@ -10,6 +10,10 @@ use hvdef::HV_PAGE_SIZE;
 use hvdef::hypercall::HypercallOutput;
 use memory_range::MemoryRange;
 use thiserror::Error;
+#[cfg(feature = "tracing")]
+use core::sync::atomic::AtomicBool;
+#[cfg(feature = "tracing")]
+use core::sync::atomic::Ordering;
 use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 use x86defs::tdx::TdCallLeaf;
 use x86defs::tdx::TdCallResult;
@@ -26,6 +30,9 @@ use x86defs::tdx::TdgMemPageGpaAttr;
 use x86defs::tdx::TdgMemPageLevel;
 use x86defs::tdx::TdxExtendedFieldCode;
 use x86defs::tdx::TdxGlaListInfo;
+
+#[cfg(feature = "tracing")]
+static ACCEPT_PAGES_LOGGED_ONCE: AtomicBool = AtomicBool::new(false);
 
 /// Input to a tdcall. This is not defined in the TDX specification, but a
 /// contract between callers of this module and this module's handling of
@@ -155,7 +162,7 @@ pub fn tdcall_rdmsr(
     *msr_value = output.r11;
 
     #[cfg(feature = "tracing")]
-    tracing::trace!(msr_index, msr_value, output.r10, "tdcall_rdmsr");
+    tracing_no_std::trace!(msr_index, msr_value, output.r10, "tdcall_rdmsr");
 
     match result {
         TdVmCallR10Result::SUCCESS => Ok(()),
@@ -297,7 +304,7 @@ pub fn tdcall_accept_pages(
     as_large_page: bool,
 ) -> Result<(), TdCallResultCode> {
     #[cfg(feature = "tracing")]
-    tracing::trace!(gpa_page_number, as_large_page, "tdcall_accept_pages");
+    tracing_no_std::trace!(gpa_page_number, as_large_page, "tdcall_accept_pages");
 
     let rcx = TdgMemPageAcceptRcx::new()
         .with_gpa_page_number(gpa_page_number)
@@ -344,7 +351,7 @@ pub fn tdcall_page_attr_rd(
     gpa: u64,
 ) -> Result<TdgPageAttrRdResult, TdCallResultCode> {
     #[cfg(feature = "tracing")]
-    tracing::trace!(gpa, "tdcall_page_attr_rd");
+    tracing_no_std::trace!(gpa, "tdcall_page_attr_rd");
 
     let input = TdcallInput {
         leaf: TdCallLeaf::MEM_PAGE_ATTR_RD,
@@ -379,7 +386,7 @@ pub fn tdcall_page_attr_wr(
     mask: TdgMemPageAttrWriteR8,
 ) -> Result<(), TdCallResultCode> {
     #[cfg(feature = "tracing")]
-    tracing::trace!(?mapping, ?attributes, ?mask, "tdcall_page_attr_wr");
+    tracing_no_std::trace!(?mapping, ?attributes, ?mask, "tdcall_page_attr_wr");
 
     let input = TdcallInput {
         leaf: TdCallLeaf::MEM_PAGE_ATTR_WR,
@@ -474,7 +481,8 @@ pub fn accept_pages<T: Tdcall>(
     attributes: AcceptPagesAttributes,
 ) -> Result<(), AcceptPagesError> {
     #[cfg(feature = "tracing")]
-    tracing::trace!(%range, "accept_pages");
+    tracing_no_std::info!(%range, "accept_pages");
+
 
     let set_attributes = |call: &mut T, mapping| -> Result<(), AcceptPagesError> {
         match attributes {
@@ -512,7 +520,11 @@ pub fn accept_pages<T: Tdcall>(
                     }
                     TdCallResultCode::PAGE_SIZE_MISMATCH => {
                         #[cfg(feature = "tracing")]
-                        tracing::trace!("accept pages size mismatch returned");
+                        tracing_no_std::trace!("accept pages size mismatch returned");
+                        #[cfg(feature = "tracing")]
+                        if !ACCEPT_PAGES_LOGGED_ONCE.swap(true, Ordering::Relaxed) {
+                            log::info!("tdcall::accept_pages reached PAGE_SIZE_MISMATCH");
+                        }
                     }
                     _ => return Err(AcceptPagesError::Unknown(e)),
                 },
@@ -556,7 +568,7 @@ pub fn set_page_attributes(
     mask: TdgMemPageAttrWriteR8,
 ) -> Result<(), TdCallResultCode> {
     #[cfg(feature = "tracing")]
-    tracing::trace!(
+    tracing_no_std::trace!(
         %range,
         ?attributes,
         ?mask,
@@ -581,7 +593,7 @@ pub fn set_page_attributes(
                 }
                 Err(TdCallResultCode::PAGE_SIZE_MISMATCH) => {
                     #[cfg(feature = "tracing")]
-                    tracing::trace!("set pages attr size mismatch returned");
+                    tracing_no_std::trace!("set pages attr size mismatch returned");
                 }
                 Err(e) => return Err(e),
             }
@@ -789,3 +801,4 @@ pub fn tdcall_mr_report(call: &mut impl Tdcall, report: &mut TdReport) -> Result
         _ => Err(output.rax),
     }
 }
+

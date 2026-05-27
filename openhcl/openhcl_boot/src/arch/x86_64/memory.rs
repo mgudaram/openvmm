@@ -43,6 +43,7 @@ pub fn setup_vtl2_memory(
     // or skipped, since the operation is expensive.
     // TODO: if applying vtl 2 protections for non-isolated VMs moves to the
     // boot shim, apply them here.
+    log::info!("setup_vtl2_memory: isolation type: {:?}\n", shim_params.isolation_type);
     if let IsolationType::None = shim_params.isolation_type {
         return;
     }
@@ -103,6 +104,7 @@ pub fn setup_vtl2_memory(
         partition_info.vtl2_ram.iter().map(|e| e.range),
         shim_params.imported_regions().map(|(r, _)| r),
     ) {
+        log::info!("setup_vtl2_memory: accept_vtl2_memory1: range {:x?}\n", range);
         accept_vtl2_memory(shim_params, &mut local_map, range);
     }
 
@@ -114,6 +116,7 @@ pub fn setup_vtl2_memory(
             core::iter::once(bounce_buffer),
             partition_info.vtl2_ram.iter().map(|e| e.range),
         ) {
+            log::info!("setup_vtl2_memory: accept_vtl2_memory2: range {:x?}\n", range);
             accept_vtl2_memory(shim_params, &mut local_map, range);
         }
 
@@ -130,14 +133,18 @@ pub fn setup_vtl2_memory(
         &mut []
     };
 
+    log::info!("setup_vtl2_memory: Imported regions\n");
+
     // Iterate over all imported regions that are not already accepted. They must be accepted here.
     // TODO: No VTL0 memory is currently marked as pending.
     for (imported_range, already_accepted) in shim_params.imported_regions() {
         if !already_accepted {
+            log::info!("setup_vtl2_memory: accept_pending_vtl2_memory: range {:x?}\n", imported_range);
             accept_pending_vtl2_memory(shim_params, &mut local_map, ram_buffer, imported_range);
         }
     }
 
+    log::info!("setup_vtl2_memory: page tables\n");
     // TDX has specific memory initialization logic. Create a set of page tables for the APs
     // to use during the mailbox spinloop, and carve out memory for TDCALL based hypercalls
     if shim_params.isolation_type == IsolationType::Tdx {

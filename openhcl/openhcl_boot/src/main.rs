@@ -604,6 +604,13 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // any access to secrets in the boot shim.
     boot_logger_runtime_init(p.isolation_type, partition_info.com3_serial_available);
     log::info!("openhcl_boot: logging enabled");
+    log::info!(
+        "PartitionInfo: {:x?}, {:x?}, {:x?}, {:x?}",
+        partition_info.memory_allocation_mode,
+        partition_info.vmbus_vtl0,
+        partition_info.vmbus_vtl2,
+        partition_info.vtl2_ram
+    );
 
     // Confidential debug will show up in boot_options only if included in the
     // static command line, or if can_trust_host is true (so the dynamic command
@@ -647,6 +654,16 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     if partition_info.cpus.is_empty() {
         panic!("no cpus");
     }
+    log::info!("memory_start_address: {:x}", p.memory_start_address);
+    log::info!(
+        "vtl2_reserved_region_start: {:x}",
+        p.vtl2_reserved_region_start
+    );
+    log::info!(
+        "vtl2_reserved_region_size: {:x}",
+        p.vtl2_reserved_region_size
+    );
+    log::info!("boot_shim_params: {:x?}", p);
 
     validate_vp_hw_ids(partition_info);
 
