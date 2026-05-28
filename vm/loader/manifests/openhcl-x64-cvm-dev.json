@@ -33,7 +33,7 @@
             },
             "image": {
                 "openhcl": {
-                    "command_line": "OPENHCL_CONFIDENTIAL_DEBUG=1 console=ttynull earlyprintk=mshvdbg_tdx,keep OPENHCL_BOOT_LOG=1 OPENVMM_LOG=trace,tdcall=trace",
+                    "command_line": "OPENHCL_CONFIDENTIAL_DEBUG=1 console=ttynull earlyprintk=mshvdbg_tdx,keep OPENHCL_BOOT_LOG=1",
                     "memory_page_count": 163840,
                     "memory_page_base": 32768,
                     "uefi": true
