@@ -887,7 +887,7 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::ModifySparseGpaPageHostVisibilit
             return Err((HvError::AccessDenied, 0));
         }
 
-        tracing::debug!(
+        tracing::info!(
             ?visibility,
             pages = gpa_pages.len(),
             "modify_gpa_visibility"

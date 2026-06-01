@@ -256,7 +256,17 @@ fn accept_vtl2_memory(
                 .expect("accepting vtl 2 memory must not fail");
         }
         IsolationType::Tdx => {
-            super::tdx::accept_pages(range).expect("accepting vtl2 memory must not fail")
+            match super::tdx::accept_pages(range) {
+                Ok(()) => {},
+                Err(err) => {
+                    log::error!(
+                        "accept_vtl2_memory: TDX accept_pages failure: range {:x?}, err: {:?}",
+                        range,
+                        err
+                    );
+                    panic!("accepting vtl2 memory must not fail");
+                }
+            }
         }
         _ => unreachable!(),
     }
@@ -332,8 +342,17 @@ fn accept_pending_vtl2_memory(
                             .expect("accepting vtl 2 memory must not fail");
                     }
                     IsolationType::Tdx => {
-                        super::tdx::accept_pages(range)
-                            .expect("accepting vtl 2 memory must not fail");
+                        match super::tdx::accept_pages(range) {
+                            Ok(()) => {},
+                            Err(err) => {
+                                log::error!(
+                                    "accept_pending_vtl2_memory: TDX accept_pages failure: range {:x?}, err: {:?}",
+                                    range,
+                                    err
+                                );
+                                panic!("accepting vtl 2 memory must not fail");
+                            }
+                        }
                     }
                     _ => unreachable!(),
                 }

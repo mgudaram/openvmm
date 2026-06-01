@@ -289,7 +289,9 @@ impl MemoryAcceptor {
             }
 
             IsolationType::Tdx => {
-                // Nothing to do for TDX.
+                self.mshv_vtl
+                    .tdx_release_pages(range)
+                    .expect("failed to release pages for TDX visibility transition");
             }
             IsolationType::Cca => {
                 // TODO: CCA: anything to do here?

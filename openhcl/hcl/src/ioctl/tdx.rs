@@ -77,6 +77,12 @@ impl MshvVtl {
 
         tdcall::accept_pages(&mut MshvVtlTdcall(self), range, attributes)
     }
+
+    /// Issues a tdcall to release pages.
+    pub fn tdx_release_pages(&self, range: MemoryRange) -> Result<(), TdCallResultCode> {
+        tdcall::release_pages(&mut MshvVtlTdcall(self), range)
+            .map_err(|error| error.code())
+    }
 }
 
 impl<'a> ProcessorRunner<'a, Tdx<'a>> {
