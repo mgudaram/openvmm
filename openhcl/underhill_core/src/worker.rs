@@ -3229,6 +3229,9 @@ async fn new_underhill_vm(
                             env_cfg.test_configuration,
                             Some(TestScenarioConfig::VpciTdispFlow)
                         ),
+                        // On TDX guests, attempt to initialize TDISP-capable
+                        // devices before exposing them to the guest.
+                        startup_tdisp_flow: isolation == virt::IsolationType::Tdx,
                     },
                 );
 
@@ -3254,6 +3257,18 @@ async fn new_underhill_vm(
                     prog_if: Some(ProgrammingInterface::NETWORK_CONTROLLER_ETHERNET_GDMA),
                     sub_class: Some(Subclass::NETWORK_CONTROLLER_ETHERNET),
                     base_class: Some(ClassCode::NETWORK_CONTROLLER),
+                    sub_vendor_id: None,
+                    sub_system_id: None,
+                });
+
+                // Allow RPB devices.
+                relay.add_allowed_device(AllowedDevice {
+                    vendor_id: Some(0x8086),
+                    device_id: Some(0xd52),
+                    revision_id: None,
+                    prog_if: Some(ProgrammingInterface::NONE),
+                    sub_class: Some(Subclass::NONE),
+                    base_class: Some(ClassCode::UNASSIGNED),
                     sub_vendor_id: None,
                     sub_system_id: None,
                 });

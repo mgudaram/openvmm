@@ -71,6 +71,9 @@ pub struct VpciRelayOptions {
     /// When set, the relay will exercise a mock TDISP flow for emulated TDISP
     /// devices produced by OpenVMM tests.
     pub test_tdisp_flow: bool,
+    /// When set, the relay will attempt to run the real TDISP startup flow for
+    /// TDISP-capable devices before exposing them to the guest.
+    pub startup_tdisp_flow: bool,
 }
 
 /// Virtual PCI relay.
@@ -316,10 +319,14 @@ impl VpciRelay {
             .context("failed to initialize vpci device")?;
         let vpci_device = Arc::new(vpci_device);
 
+        tracing::info!("relay_vpci_bus: vpci_device creation\n");
+
         if self.options.test_tdisp_flow {
             Self::tdisp_test_mock_flow(vpci_device.clone())
                 .await
                 .expect("failed to exercise TDISP flow test");
+        } else if self.options.startup_tdisp_flow {
+            Self::tdisp_startup_flow(vpci_device.clone()).await?;
         }
 
         let device_name = format!("assigned_device:vpci-{instance_id}");
@@ -398,6 +405,50 @@ impl VpciRelay {
             TDISP_MOCK_SUPPORTED_FEATURES
         );
 
+        Ok(())
+    }
+
+    /// Runs the startup TDISP sequence for TDISP-capable devices.
+    async fn tdisp_startup_flow(device: Arc<VpciDevice>) -> anyhow::Result<()> {
+        let device_interface_info = match device.tdisp_get_device_interface_info().await {
+            Ok(info) => info,
+            Err(err) => {
+                tracing::debug!(
+                    error = %err,
+                    "device did not negotiate TDISP protocol, skipping TDISP startup"
+                );
+                return Ok(());
+            }
+        };
+
+        tracing::info!(
+            ?device_interface_info,
+            "TDISP-capable device detected, executing startup flow"
+        );
+
+        device
+            .tdisp_bind_interface()
+            .await
+            .context("failed to bind TDISP interface")?;
+
+        let tdi_report = device
+            .tdisp_get_tdi_report()
+            .await
+            .context("failed to retrieve TDI report")?;
+
+        tracing::info!(
+            ?tdi_report,
+            "received TDI report during TDISP startup"
+        );
+
+        // TODO TDISP: Integrate report verification/attestation policy before
+        // allowing device usage in production-hardening mode.
+        device
+            .tdisp_start_device()
+            .await
+            .context("failed to start TDI device")?;
+
+        tracing::info!("TDISP startup flow completed");
         Ok(())
     }
 }

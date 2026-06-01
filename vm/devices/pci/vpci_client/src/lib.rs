@@ -344,7 +344,7 @@ impl VpciDeviceDescription {
             .call_failable(WorkerRequest::QueryResourceRequirements, self.id)
             .await?;
 
-        tracing::debug!(
+        tracing::info!(
             bars = format_args!("{:#x?}", requirements.bars),
             "queried requirements"
         );
@@ -656,7 +656,7 @@ impl TdispVirtualDeviceInterface for VpciDevice {
 
     async fn tdisp_get_device_interface_info(&self) -> anyhow::Result<TdispDeviceInterfaceInfo> {
         // TDISP TODO: Configure the correct guest protocol type when TDX support is added.
-        let target_protocol_type = TdispGuestProtocolType::AmdSevTioV1;
+        let target_protocol_type = TdispGuestProtocolType::IntelTdxConnectV1;
 
         let res = self
             .send_tdisp_command(openhcl_tdisp::new_get_device_interface_info_command(
