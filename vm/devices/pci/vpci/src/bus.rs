@@ -272,7 +272,7 @@ impl PollDevice for VpciBusDevice {
 
 impl MmioIntercept for VpciBusDevice {
     fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
-        tracing::trace!(addr, "VPCI bus MMIO read");
+        tracing::info!(addr, "VPCI bus MMIO read");
 
         // Remove vtom, as the guest may access it with or without set.
         let addr = addr & !self.vtom.unwrap_or(0);
@@ -305,7 +305,7 @@ impl MmioIntercept for VpciBusDevice {
     }
 
     fn mmio_write(&mut self, addr: u64, data: &[u8]) -> IoResult {
-        tracing::trace!(addr, "VPCI bus MMIO write");
+        tracing::info!(addr, "VPCI bus MMIO write");
 
         // Remove vtom, as the guest may access it with or without set.
         let addr = addr & !self.vtom.unwrap_or(0);

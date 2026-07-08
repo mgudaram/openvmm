@@ -76,6 +76,9 @@ pub trait TdispVirtualDeviceInterface: Send + Sync {
     /// Request a TDI report from the TDI or physical device.
     fn tdisp_get_tdi_report(&self) -> impl Future<Output = anyhow::Result<TdiReportStruct>> + Send;
 
+        /// Request the TDI support buffer from the vpci channel.
+    fn tdisp_get_tdi_support(&self) -> impl Future<Output = anyhow::Result<Vec<u8>>> + Send;
+
     /// Request the TDI device id from the vpci channel.
     fn tdisp_get_tdi_device_id(&self) -> impl Future<Output = anyhow::Result<u64>> + Send;
 

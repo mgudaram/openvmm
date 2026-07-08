@@ -99,6 +99,9 @@ enum TdispReportType {
 
   // Guest requests whether the physical device is registered.
   TDISP_REPORT_TYPE_IS_REGISTERED = 5;
+
+  // Guest requests the TDI support information.
+  TDISP_REPORT_TYPE_TDI_SUPPORT = 6;
 }
 
 // Represents the type of CVM technology the guest requests to use.

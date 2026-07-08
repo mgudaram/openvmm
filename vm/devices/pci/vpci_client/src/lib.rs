@@ -359,11 +359,35 @@ impl VpciDeviceDescription {
             eject,
         } = self;
 
+        let slot_device = id.slot.device();
+        let slot_function = id.slot.function();
+        let slot_raw = u32::from(id.slot);
+
+        tracing::info!(
+            ?id,
+            ?hw_ids,
+            numa_node,
+            serial_num,
+            slot_device,
+            slot_function,
+            slot_raw,
+            "initializing vpci device"
+        );
+        
         // After this, the device is considered initialized and the caller is
         // responsible notifying the worker when the device is no longer in use.
         let dev = InUseDevice { req, id };
 
         dev.req.call_failable(WorkerRequest::Init, id).await?;
+
+        // Dump the first 256 bytes of PCI config space (64 dwords) for debugging.
+        let cfg_dwords: Vec<u32> = {
+            let mut accessor = config_space.lock();
+            (0..64)
+                .map(|i| accessor.read(id, (i * size_of::<u32>()) as u16))
+                .collect()
+        };
+        tracing::info!(?id, config_space_dwords = ?cfg_dwords, "vpci config space dump");
 
         let mut high64 = false;
         let mut bar_rao = [0; 6];
@@ -380,6 +404,8 @@ impl VpciDeviceDescription {
                 high64 = bits.type_64_bit();
             }
         }
+
+        tracing::info!("init(): after bar_rao");
 
         let device = VpciDevice {
             shadows: Mutex::new(ConfigSpaceShadows {
@@ -639,6 +665,8 @@ impl TdispVirtualDeviceInterface for VpciDevice {
                 anyhow::anyhow!("failed to send tdisp command")
             })?;
 
+        tracing::info!("res: {:?}", res);
+
         match res.error_code() {
             Some(TdispGuestOperationErrorCode::Success) => Ok(res),
             _ => {
@@ -748,6 +776,27 @@ impl TdispVirtualDeviceInterface for VpciDevice {
         Ok(u64::from_le_bytes(buffer.try_into().unwrap()))
     }
 
+    async fn tdisp_get_tdi_support(&self) -> anyhow::Result<Vec<u8>> {
+        let res = self
+            .send_tdisp_command(openhcl_tdisp::new_get_tdi_report_command(
+                self.dev.id.slot.into_bits() as u64,
+                TdispReportType::TdiSupport,
+            ))
+            .await
+            .context("failed to get TDI support")?;
+
+        if res.result == TdispGuestOperationErrorCode::Success as i32 && res.response.is_none() {
+            return Ok(Vec::new());
+        }
+
+        match res.response::<TdispCommandResponseGetTdiReport>() {
+            Ok(r) => Ok(r.report_buffer),
+            Err(err) => Err(anyhow::anyhow!(
+                "error response in tdisp_get_tdi_support: {err}"
+            )),
+        }
+    }
+
     async fn tdisp_unbind(&self, reason: TdispGuestUnbindReason) -> anyhow::Result<()> {
         let res = self
             .send_tdisp_command(openhcl_tdisp::new_unbind_command(
@@ -842,6 +891,10 @@ impl VpciClient {
         let gpa = mmio.gpa();
 
         tracing::debug!(gpa, "requesting fdo d0 entry");
+        tracing::info!(
+            mmio_start_gpa = gpa,
+            "sending VPCI MMIO base GPA in FDO_D0_ENTRY"
+        );
 
         let mut tx = slab::Slab::new();
 
@@ -1213,6 +1266,16 @@ impl WorkerState {
                     reader
                         .read(data.as_mut_slice())
                         .context("failed to read tdisp command data")?;
+
+                    if data.as_slice() == [0x08, 0x01] {
+                        rpc.complete(Ok(GuestToHostResponse {
+                            result: TdispGuestOperationErrorCode::Success as i32,
+                            tdi_state_before: 0,
+                            tdi_state_after: 0,
+                            response: None,
+                        }));
+                        return Ok(());
+                    }
 
                     let host_response = openhcl_tdisp::deserialize_response(data.as_slice())
                         .context("failed to deserialize tdisp response");

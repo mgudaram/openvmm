@@ -665,6 +665,8 @@ impl hv1_hypercall::ModifySparseGpaPageHostVisibility for WhpHypercallExit<'_, '
             // If the page is not accepted, the hypervisor returns operation
             // denied.
             let gpa = *page * HV_PAGE_SIZE;
+            log::info!("hv1_hypercall: modify_gpa_visibility {:x}\n", gpa);
+
             if partition.vtl0.gpa_visibility(gpa).is_none() {
                 tracing::error!(page, "modify visibility called for non-accepted page");
                 return Err((HvError::OperationDenied, index));

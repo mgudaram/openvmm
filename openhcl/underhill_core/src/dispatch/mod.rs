@@ -554,6 +554,7 @@ impl LoadedVm {
                             "failed to process VPCI relay"
                         );
                     }
+                    tracing::info!(CVM_ALLOWED, "VPCI relay is ready");
                 }
             }
         };

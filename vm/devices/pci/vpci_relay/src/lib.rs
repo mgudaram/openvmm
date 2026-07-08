@@ -311,7 +311,18 @@ impl VpciRelay {
             return Ok(());
         }
 
-        tracing::info!(%instance_id, vendor_id = hw_ids.vendor_id, device_id = hw_ids.device_id, "vpci relay device arrived");
+        // Extract owned values before moving vpci_device in init()
+        let vendor_id = hw_ids.vendor_id;
+        let device_id = hw_ids.device_id;
+
+        tracing::info!(%instance_id, vendor_id, device_id, "vpci relay device arrived");
+        tracing::info!(
+            %instance_id,
+            mmio_start_gpa = mmio_gpa,
+            mmio_size,
+            mmio_end_gpa = mmio_gpa + mmio_size,
+            "assigned VPCI MMIO space for relayed device"
+        );
 
         let (vpci_device, removed) = vpci_device
             .init()
@@ -330,6 +341,14 @@ impl VpciRelay {
         }
 
         let device_name = format!("assigned_device:vpci-{instance_id}");
+        tracing::info!(
+            %instance_id,
+            vendor_id,
+            device_id,
+            %device_name,
+            "relaying VPCI device from VTL2 to VTL0"
+        );
+
         let (device_unit, device) = chipset
             .add_dyn_device(&self.driver_source, state_units, device_name, async |_| {
                 Ok(RelayedVpciDevice(vpci_device.clone()))
@@ -410,7 +429,7 @@ impl VpciRelay {
 
     /// Runs the startup TDISP sequence for TDISP-capable devices.
     async fn tdisp_startup_flow(device: Arc<VpciDevice>) -> anyhow::Result<()> {
-        let device_interface_info = match device.tdisp_get_device_interface_info().await {
+        /*let device_interface_info = match device.tdisp_get_device_interface_info().await {
             Ok(info) => info,
             Err(err) => {
                 tracing::debug!(
@@ -426,12 +445,9 @@ impl VpciRelay {
             "TDISP-capable device detected, executing startup flow"
         );
 
-        device
-            .tdisp_bind_interface()
-            .await
-            .context("failed to bind TDISP interface")?;
+        */
 
-        let tdi_report = device
+        /*let tdi_report = device
             .tdisp_get_tdi_report()
             .await
             .context("failed to retrieve TDI report")?;
@@ -448,7 +464,40 @@ impl VpciRelay {
             .await
             .context("failed to start TDI device")?;
 
-        tracing::info!("TDISP startup flow completed");
+        tracing::info!("TDISP startup flow completed");*/
+        let tdi_support = device
+            .tdisp_get_tdi_support()
+            .await
+            .context("failed to retrieve TDI support")?;
+
+        tracing::info!(
+            tdi_support_len = tdi_support.len(),
+            "received TDI support during TDISP startup"
+        );
+
+        tracing::info!("tdi_support: {:x?}\n", tdi_support);
+
+        let tdi_device_id = device
+            .tdisp_get_tdi_device_id()
+            .await
+            .context("failed to retrieve TDI device ID")?;
+
+        tracing::info!(
+            "received TDI device ID: {:x} during TDISP startup", tdi_device_id
+        );
+
+        device
+            .tdisp_bind_interface()
+            .await
+            .context("failed to bind TDISP interface")?;
+        // TODO TDISP: Integrate report verification/attestation policy before
+        // allowing device usage in production-hardening mode.
+        /*device
+            .tdisp_start_device()
+            .await
+            .context("failed to start TDI device")?;
+
+        tracing::info!("TDISP startup flow completed");*/
         Ok(())
     }
 }
