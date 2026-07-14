@@ -776,6 +776,22 @@ impl TdispVirtualDeviceInterface for VpciDevice {
         Ok(u64::from_le_bytes(buffer.try_into().unwrap()))
     }
 
+    async fn tdisp_get_tdi_interface_status(&self) -> anyhow::Result<u64> {
+        let buffer = self
+            .tdisp_get_device_report(&TdispReportType::InterfaceStatus)
+            .await
+            .context("failed to get TDI interface status")?;
+
+        // Ensure it's a u64
+        if buffer.len() != size_of::<u64>() {
+            return Err(anyhow::anyhow!(
+                "unexpected buffer size for TDI interface status"
+            ));
+        }
+
+        Ok(u64::from_le_bytes(buffer.try_into().unwrap()))
+    }
+
     async fn tdisp_get_tdi_support(&self) -> anyhow::Result<Vec<u8>> {
         let res = self
             .send_tdisp_command(openhcl_tdisp::new_get_tdi_report_command(

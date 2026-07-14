@@ -91,8 +91,8 @@ enum TdispReportType {
   // Guest requests the interface report of the TDI.
   TDISP_REPORT_TYPE_INTERFACE_REPORT = 2;
 
-  // Guest requests the certificate chain of the physical device.
-  TDISP_REPORT_TYPE_CERTIFICATE_CHAIN = 3;
+  // Guest request the device interface state of the TDI.
+  TDISP_REPORT_TYPE_INTERFACE_STATUS = 3;
 
   // Guest requests the measurements of the physical device.
   TDISP_REPORT_TYPE_MEASUREMENTS = 4;
@@ -102,6 +102,9 @@ enum TdispReportType {
 
   // Guest requests the TDI support information.
   TDISP_REPORT_TYPE_TDI_SUPPORT = 6;
+
+  // Guest requests the certificate chain of the physical device.
+  TDISP_REPORT_TYPE_CERTIFICATE_CHAIN = 7;
 }
 
 // Represents the type of CVM technology the guest requests to use.

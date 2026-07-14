@@ -490,6 +490,16 @@ impl VpciRelay {
             .tdisp_bind_interface()
             .await
             .context("failed to bind TDISP interface")?;
+
+        let tdi_status = device
+            .tdisp_get_tdi_interface_status()
+            .await
+            .context("failed to retrieve TDI device ID")?;
+
+        tracing::info!(
+            "received TDI tdi_status: {:x} during TDISP startup", tdi_status
+        );
+    
         // TODO TDISP: Integrate report verification/attestation policy before
         // allowing device usage in production-hardening mode.
         /*device
