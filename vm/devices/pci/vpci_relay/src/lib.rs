@@ -173,6 +173,16 @@ impl AllowedDevice {
 }
 
 impl VpciRelay {
+    fn tdcall_tdi_rd(gfunction_id: u64, field: u64) -> anyhow::Result<u64> {
+        let mshv = hcl::ioctl::Mshv::new().context("failed to open /dev/mshv")?;
+        let vtl = mshv
+            .create_vtl()
+            .context("failed to open mshv_vtl device")?;
+
+        vtl.tdx_tdi_rd_via_tdcall(gfunction_id, field)
+            .map_err(|err| anyhow::anyhow!("tdcall tdi rd failed: {err:?}"))
+    }
+
     /// Creates a new VPCI relay.
     pub fn new(
         driver_source: VmTaskDriverSource,
@@ -498,6 +508,16 @@ impl VpciRelay {
 
         tracing::info!(
             "received TDI tdi_status: {:x} during TDISP startup", tdi_status
+        );
+
+        const TDI_RD_FIELD: u64 = 2;
+
+        let tdi_rd_value = Self::tdcall_tdi_rd(tdi_device_id, TDI_RD_FIELD)?;
+        tracing::info!(
+            gfunction_id = tdi_device_id,
+            field = TDI_RD_FIELD,
+            tdi_rd_value,
+            "TDG.TDI.RD tdcall completed during TDISP startup"
         );
     
         // TODO TDISP: Integrate report verification/attestation policy before

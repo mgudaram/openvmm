@@ -888,3 +888,32 @@ pub fn tdcall_mr_report(call: &mut impl Tdcall, report: &mut TdReport) -> Result
     }
 }
 
+/// Issue a TDG.TDI.RD call.
+pub fn tdcall_tdi_rd(
+    call: &mut impl Tdcall,
+    gfunction_id: u64,
+    field: u64
+) -> Result<u64, TdCallResult> {
+
+    let input = TdcallInput {
+        leaf: TdCallLeaf::TDI_RD,
+        rcx: gfunction_id,
+        rdx: field,
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(output.rcx),
+        _ => Err(output.rax),
+    }
+}
+

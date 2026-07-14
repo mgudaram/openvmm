@@ -25,6 +25,7 @@ use std::cell::UnsafeCell;
 use std::os::fd::AsRawFd;
 use tdcall::Tdcall;
 use tdcall::tdcall_vp_invgla;
+use tdcall::tdcall_tdi_rd;
 use tdcall::tdcall_vp_rd;
 use tdcall::tdcall_vp_wr;
 use x86defs::tdx::TdCallResult;
@@ -82,6 +83,15 @@ impl MshvVtl {
     pub fn tdx_release_pages(&self, range: MemoryRange) -> Result<(), TdCallResultCode> {
         tdcall::release_pages(&mut MshvVtlTdcall(self), range)
             .map_err(|error| error.code())
+    }
+
+    /// Issues TDG.TDI.RD via tdcall and returns the read value.
+    pub fn tdx_tdi_rd_via_tdcall(
+        &self,
+        gfunction_id: u64,
+        field: u64,
+    ) -> Result<u64, TdCallResultCode> {
+        tdcall_tdi_rd(&mut MshvVtlTdcall(self), gfunction_id, field).map_err(|err| err.code())
     }
 }
 
