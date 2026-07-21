@@ -75,6 +75,7 @@ fn tdcall(input: TdcallInput) -> TdcallOutput {
     let rcx;
     let rdx;
     let r8;
+    let r9;
     let r10;
     let r11;
 
@@ -94,7 +95,7 @@ fn tdcall(input: TdcallInput) -> TdcallOutput {
             inout("rcx") input.rcx => rcx,
             inout("rdx") input.rdx => rdx,
             inout("r8") input.r8 => r8,
-            inout("r9")  input.r9 => _,
+            inout("r9")  input.r9 => r9,
             inout("r10") input.r10 => r10,
             inout("r11") input.r11 => r11,
             inout("r12") input.r12 => _,
@@ -109,6 +110,7 @@ fn tdcall(input: TdcallInput) -> TdcallOutput {
         rcx,
         rdx,
         r8,
+        r9,
         r10,
         r11,
     }

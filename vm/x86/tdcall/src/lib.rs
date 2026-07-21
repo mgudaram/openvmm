@@ -77,6 +77,8 @@ pub struct TdcallOutput {
     pub rdx: u64,
     /// r8,
     pub r8: u64,
+    /// r9
+    pub r9: u64,
     /// r10
     pub r10: u64,
     /// r11
@@ -892,13 +894,55 @@ pub fn tdcall_mr_report(call: &mut impl Tdcall, report: &mut TdReport) -> Result
 pub fn tdcall_tdi_rd(
     call: &mut impl Tdcall,
     gfunction_id: u64,
-    field: u64
+    field: u64,
+    out_buf: u64,
 ) -> Result<u64, TdCallResult> {
 
+    log::info!("gfunc: {:x} field {:x} out_buf {:x}", gfunction_id, field, out_buf);
+    
     let input = TdcallInput {
         leaf: TdCallLeaf::TDI_RD,
         rcx: gfunction_id,
         rdx: field,
+        r8: out_buf,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    #[cfg(feature = "tracing")]
+    tracing_no_std::trace!(
+        gfunction_id,
+        field,
+        out_buf,
+        returned_rcx = output.rcx,
+        tdcall_result = u64::from(output.rax),
+        "tdcall_tdi_rd"
+    );
+    log::info!("gfunc: {:x} field {:x} out_buf {:x} rcx: {:x} rax: {:x}", gfunction_id, field, out_buf, output.rcx, u64::from(output.rax));
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(output.rcx),
+        _ => Err(output.rax),
+    }
+}
+
+
+/// Issue a TDG.TDI.START call.
+pub fn tdcall_tdi_start(
+    call: &mut impl Tdcall,
+    gfunction_id: u64,
+    bind_session_id: u64,
+) -> Result<(), TdCallResult> {
+    let input = TdcallInput {
+        leaf: TdCallLeaf::TDI_START,
+        rcx: gfunction_id,
+        rdx: bind_session_id,
         r8: 0,
         r9: 0,
         r10: 0,
@@ -911,9 +955,75 @@ pub fn tdcall_tdi_rd(
 
     let output = call.tdcall(input);
 
+    tracing_no_std::trace!(
+        gfunction_id,
+        bind_session_id,
+        returned_rcx = output.rcx,
+        tdcall_result = u64::from(output.rax)
+    );
+
     match output.rax.code() {
-        TdCallResultCode::SUCCESS => Ok(output.rcx),
+        TdCallResultCode::SUCCESS => Ok(()),
         _ => Err(output.rax),
+    }
+}
+
+/// Issue a TDG.TDI.MMIO.ACCEPT call.
+#[derive(Debug)]
+pub struct TdcallTdiMmioAcceptOutput {
+    /// TDCALL status code returned in rax.
+    pub status: TdCallResultCode,
+    /// Failed GPA address returned in rcx. Zero when status is SUCCESS.
+    pub gpa_address: u64,
+    /// Failed range size/offset returned in r9. Zero when status is SUCCESS.
+    pub range_size_offset: u64,
+}
+
+/// Issue a TDG.TDI.MMIO.ACCEPT call.
+pub fn tdcall_tdi_mmio_accept(
+    call: &mut impl Tdcall,
+    mmio_base_addr: u64,
+    mmio_range_idx: u64,
+    gfunction_id: u64,
+    range_size_offset: u64,
+) -> TdcallTdiMmioAcceptOutput {
+    let input = TdcallInput {
+        leaf: TdCallLeaf::TDI_MMIO_ACCEPT,
+        rcx: mmio_base_addr,
+        rdx: mmio_range_idx,
+        r8: gfunction_id,
+        r9: range_size_offset,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    tracing_no_std::trace!(
+        mmio_base_addr,
+        mmio_range_idx,
+        gfunction_id,
+        range_size_offset,
+        returned_rcx = output.rcx,
+        returned_r9 = output.r9,
+        tdcall_result = u64::from(output.rax)
+    );
+
+    let status = output.rax.code();
+    let (gpa_address, range_size_offset) = if status == TdCallResultCode::SUCCESS {
+        (0, 0)
+    } else {
+        (output.rcx, output.r9)
+    };
+
+    TdcallTdiMmioAcceptOutput {
+        status,
+        gpa_address,
+        range_size_offset,
     }
 }
 

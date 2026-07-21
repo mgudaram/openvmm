@@ -42,6 +42,14 @@ open_enum! {
         VP_ENTER = 25,
         VP_INVGLA = 27,
         MEM_PAGE_RELEASE = 30,
+        TDI_VALIDATE = 66,
+        TDI_RD = 67,
+        TDI_START = 68,
+        DMAR_ACCEPT = 70,
+        TDI_MMIO_ACCEPT = 71,
+        IQ_INV_REQUEST = 72,
+        DMAR_RELEASE = 73,
+        IQ_INV_STATUS = 74,
     }
 }
 

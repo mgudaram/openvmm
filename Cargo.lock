@@ -10511,6 +10511,7 @@ dependencies = [
  "mesh",
  "openhcl_tdisp",
  "pci_core",
+ "sha2",
  "slab",
  "sparse_mmap",
  "state_unit",

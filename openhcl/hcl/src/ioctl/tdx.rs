@@ -24,6 +24,8 @@ use sidecar_client::SidecarVp;
 use std::cell::UnsafeCell;
 use std::os::fd::AsRawFd;
 use tdcall::Tdcall;
+use tdcall::tdcall_tdi_mmio_accept;
+use tdcall::tdcall_tdi_start;
 use tdcall::tdcall_vp_invgla;
 use tdcall::tdcall_tdi_rd;
 use tdcall::tdcall_vp_rd;
@@ -90,8 +92,43 @@ impl MshvVtl {
         &self,
         gfunction_id: u64,
         field: u64,
+        out_buff: u64,
     ) -> Result<u64, TdCallResultCode> {
-        tdcall_tdi_rd(&mut MshvVtlTdcall(self), gfunction_id, field).map_err(|err| err.code())
+        tdcall_tdi_rd(&mut MshvVtlTdcall(self), gfunction_id, field, out_buff)
+            .map_err(|err| err.code())
+    }
+
+    /// Issues TDG.TDI.START via tdcall and returns the returned value.
+    pub fn tdx_tdi_start_via_tdcall(
+        &self,
+        gfunction_id: u64,
+        bind_session_id: u64,
+    ) -> Result<(), TdCallResultCode> {
+        tdcall_tdi_start(&mut MshvVtlTdcall(self), gfunction_id, bind_session_id)
+            .map_err(|err| err.code())
+    }
+
+    /// Issues TDG.TDI.MMIO.ACCEPT via tdcall.
+    pub fn tdx_tdi_mmio_accept_via_tdcall(
+        &self,
+        mmio_base_addr: u64,
+        mmio_range_idx: u64,
+        gfunction_id: u64,
+        range_size_offset: u64,
+    ) -> Result<(), tdcall::TdcallTdiMmioAcceptOutput> {
+        let output = tdcall_tdi_mmio_accept(
+            &mut MshvVtlTdcall(self),
+            mmio_base_addr,
+            mmio_range_idx,
+            gfunction_id,
+            range_size_offset,
+        );
+
+        if output.status == TdCallResultCode::SUCCESS {
+            Ok(())
+        } else {
+            Err(output)
+        }
     }
 }
 
@@ -630,6 +667,7 @@ impl Tdcall for MshvVtlTdcall<'_> {
             rcx: mshv_tdcall_args.rcx,
             rdx: mshv_tdcall_args.rdx,
             r8: mshv_tdcall_args.r8,
+            r9: mshv_tdcall_args.r9,
             r10: mshv_tdcall_args.r10_out,
             r11: mshv_tdcall_args.r11_out,
         }

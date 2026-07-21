@@ -27,12 +27,16 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
 use openhcl_tdisp::TdispVirtualDeviceInterface;
+use openhcl_tdisp::TdispReportType;
 use pci_core::spec::hwid::HardwareIds;
+use sha2::Digest;
+use sha2::Sha384;
 use state_unit::StateUnits;
 use std::future::poll_fn;
 use std::sync::Arc;
 use std::task::Poll;
 use user_driver::DmaClient;
+use user_driver::memory::MemoryBlock;
 use vmbus_client::driver::OpenParams;
 use vmbus_server::Guid;
 use vmcore::device_state::ChangeDeviceState;
@@ -113,6 +117,13 @@ struct RelayedDevice {
     ready_to_remove: bool,
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct TdiRangeSizeOffset {
+    pub range_size: u32,
+    pub range_offset: u32,
+}
+
 impl RelayedDevice {
     async fn remove(self) {
         self.bus_unit.remove().await;
@@ -173,14 +184,51 @@ impl AllowedDevice {
 }
 
 impl VpciRelay {
-    fn tdcall_tdi_rd(gfunction_id: u64, field: u64) -> anyhow::Result<u64> {
+    fn tdcall_tdi_rd(gfunction_id: u64, field: u64, out_buf: u64) -> anyhow::Result<u64> {
         let mshv = hcl::ioctl::Mshv::new().context("failed to open /dev/mshv")?;
         let vtl = mshv
             .create_vtl()
             .context("failed to open mshv_vtl device")?;
 
-        vtl.tdx_tdi_rd_via_tdcall(gfunction_id, field)
+        vtl.tdx_tdi_rd_via_tdcall(gfunction_id, field, out_buf)
             .map_err(|err| anyhow::anyhow!("tdcall tdi rd failed: {err:?}"))
+    }
+
+    fn tdcall_tdi_start(gfunction_id: u64, bind_session_id: u64) -> anyhow::Result<()> {
+        let mshv = hcl::ioctl::Mshv::new().context("failed to open /dev/mshv")?;
+        let vtl = mshv
+            .create_vtl()
+            .context("failed to open mshv_vtl device")?;
+
+        vtl.tdx_tdi_start_via_tdcall(gfunction_id, bind_session_id)
+            .map_err(|err| anyhow::anyhow!("tdcall tdi start failed: {err:?}"))
+    }
+
+    fn tdcall_tdi_mmio_accept(
+        mmio_base_addr: u64,
+        mmio_range_idx: u64,
+        gfunction_id: u64,
+        range_size_offset: u64,
+    ) -> anyhow::Result<()> {
+        let mshv = hcl::ioctl::Mshv::new().context("failed to open /dev/mshv")?;
+        let vtl = mshv
+            .create_vtl()
+            .context("failed to open mshv_vtl device")?;
+
+        vtl.tdx_tdi_mmio_accept_via_tdcall(
+            mmio_base_addr,
+            mmio_range_idx,
+            gfunction_id,
+            range_size_offset,
+        )
+        .map_err(|output| {
+            anyhow::anyhow!(
+                "tdcall tdi mmio accept failed: status={:?} gpa_address={:#x} range_size_offset={:#x}",
+                output.status,
+                output.gpa_address,
+                output.range_size_offset
+            )
+        })
     }
 
     /// Creates a new VPCI relay.
@@ -268,16 +316,19 @@ impl VpciRelay {
         state_units: &mut StateUnits,
         offer_info: vmbus_client::OfferInfo,
     ) -> anyhow::Result<()> {
-        let entry = self.devices.vacant_entry();
-        if (entry.key() as u64 + 1) * vpci_client::MMIO_SIZE > self.mmio_range.len() {
-            anyhow::bail!("not enough MMIO space left");
-        }
+        let device_slot = {
+            let entry = self.devices.vacant_entry();
+            if (entry.key() as u64 + 1) * vpci_client::MMIO_SIZE > self.mmio_range.len() {
+                anyhow::bail!("not enough MMIO space left");
+            }
+            entry.key()
+        };
 
         let instance_id = offer_info.offer.instance_id;
 
-        let mmio = self.mmio_access.create_memory_access(
-            self.mmio_range.start() + (entry.key() as u64) * vpci_client::MMIO_SIZE,
-        )?;
+        let mmio_gpa = self.mmio_range.start() + (device_slot as u64) * vpci_client::MMIO_SIZE;
+        let mmio_size = vpci_client::MMIO_SIZE;
+        let mmio = self.mmio_access.create_memory_access(mmio_gpa)?;
 
         let channel = vmbus_client::driver::open_channel(
             self.driver_source.simple(),
@@ -347,7 +398,8 @@ impl VpciRelay {
                 .await
                 .expect("failed to exercise TDISP flow test");
         } else if self.options.startup_tdisp_flow {
-            Self::tdisp_startup_flow(vpci_device.clone()).await?;
+            self.tdisp_startup_flow(vpci_device.clone(), mmio_gpa, mmio_size)
+                .await?;
         }
 
         let device_name = format!("assigned_device:vpci-{instance_id}");
@@ -392,6 +444,8 @@ impl VpciRelay {
                 .await?
         };
 
+        let entry = self.devices.vacant_entry();
+        assert_eq!(entry.key(), device_slot);
         entry.insert(RelayedDevice {
             bus_instance_id: instance_id,
             bus_client: vpci_client,
@@ -438,7 +492,12 @@ impl VpciRelay {
     }
 
     /// Runs the startup TDISP sequence for TDISP-capable devices.
-    async fn tdisp_startup_flow(device: Arc<VpciDevice>) -> anyhow::Result<()> {
+    async fn tdisp_startup_flow(
+        &mut self,
+        device: Arc<VpciDevice>,
+        mmio_gpa: u64,
+        mmio_size: u64,
+    ) -> anyhow::Result<()> {
         /*let device_interface_info = match device.tdisp_get_device_interface_info().await {
             Ok(info) => info,
             Err(err) => {
@@ -510,24 +569,208 @@ impl VpciRelay {
             "received TDI tdi_status: {:x} during TDISP startup", tdi_status
         );
 
-        const TDI_RD_FIELD: u64 = 2;
+        const TDI_RD_FIELD_GET_STATE: u64 = 2;
 
-        let tdi_rd_value = Self::tdcall_tdi_rd(tdi_device_id, TDI_RD_FIELD)?;
+        let tdi_rd_state_value = Self::tdcall_tdi_rd(tdi_device_id, TDI_RD_FIELD_GET_STATE, 0)?;
         tracing::info!(
             gfunction_id = tdi_device_id,
-            field = TDI_RD_FIELD,
-            tdi_rd_value,
+            field = TDI_RD_FIELD_GET_STATE,
+            tdi_rd_state_value,
             "TDG.TDI.RD tdcall completed during TDISP startup"
         );
-    
-        // TODO TDISP: Integrate report verification/attestation policy before
-        // allowing device usage in production-hardening mode.
-        /*device
+
+        const TDI_RD_FIELD_BIND_SESSION: u64 = 5;
+
+        let tdi_rd_bindsession_value = Self::tdcall_tdi_rd(tdi_device_id, TDI_RD_FIELD_BIND_SESSION, 0)?;
+        tracing::info!(
+            gfunction_id = tdi_device_id,
+            field = TDI_RD_FIELD_BIND_SESSION,
+            tdi_rd_bindsession_value,
+            "TDG.TDI.RD tdcall completed during TDISP startup"
+        );
+
+        const TDI_RD_FIELD_REPORT_HASH: u64 = 3;
+        let tdi_rd_report_hash_gpa = 0;
+
+        match Self::tdcall_tdi_rd(
+            tdi_device_id,
+            TDI_RD_FIELD_REPORT_HASH,
+            0,
+        ) {
+            Ok(tdi_rd_report_hash_value) => {
+                tracing::info!(
+                    gfunction_id = tdi_device_id,
+                    field = TDI_RD_FIELD_REPORT_HASH,
+                    gpa = tdi_rd_report_hash_gpa,
+                    tdi_rd_report_hash_value,
+                    "TDG.TDI.RD tdcall completed during TDISP startup"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    gfunction_id = tdi_device_id,
+                    field = TDI_RD_FIELD_REPORT_HASH,
+                    gpa = tdi_rd_report_hash_gpa,
+                    error = %err,
+                    "TDG.TDI.RD failed; continuing TDISP startup"
+                );
+            }
+        }
+
+
+
+        /*let requested_hash_bytes = usize::try_from(tdi_rd_report_hash_len).unwrap_or(usize::MAX);
+        let hash_bytes_len = requested_hash_bytes.min(tdi_rd_report_page.len());
+        if requested_hash_bytes > tdi_rd_report_page.len() {
+            tracing::warn!(
+                requested_hash_bytes,
+                buffer_len = tdi_rd_report_page.len(),
+                "TDG.TDI.RD requested hash length exceeds scratch page; truncating"
+            );
+        }
+
+        let tdi_rd_report_hash_bytes = &tdi_rd_report_page[..hash_bytes_len];
+        let tdi_rd_report_hash_hex = tdi_rd_report_hash_bytes
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        tracing::info!(
+            requested_hash_bytes,
+            hash_bytes_len,
+            tdi_rd_report_hash_hex = %tdi_rd_report_hash_hex,
+            "read device attestation hash bytes from TDG.TDI.RD GPA buffer"
+        );
+
+        const TDI_RD_FIELD_DEVICE_ATTESTATION_HASH: u64 = 4;
+        // Allocate a 4KB scratch buffer and pass its address as the input
+        // for TDG.TDI.RD in this prototype flow.
+        let tdi_rd_attestation_page = vec![0u8; 4096];
+        let tdi_rd_attestation_pageaddr: u64 = tdi_rd_attestation_page.as_ptr() as u64;
+
+
+
+        let tdi_rd_device_attestion_hash_len = Self::tdcall_tdi_rd(tdi_device_id, TDI_RD_FIELD_DEVICE_ATTESTATION_HASH, tdi_rd_attestation_pageaddr)?;
+        tracing::info!(
+            gfunction_id = tdi_device_id,
+            field = TDI_RD_FIELD_DEVICE_ATTESTATION_HASH,
+            tdi_rd_device_attestion_hash_len,
+            "TDG.TDI.RD tdcall completed during TDISP startup"
+        );
+        let requested_hash_bytes_1 = usize::try_from(tdi_rd_device_attestion_hash_len).unwrap_or(usize::MAX);
+        let hash_bytes_len_1 = requested_hash_bytes_1.min(tdi_rd_attestation_page.len());
+        if requested_hash_bytes_1 > tdi_rd_attestation_page.len() {
+            tracing::warn!(
+                requested_hash_bytes_1,
+                buffer_len = tdi_rd_attestation_page.len(),
+                "TDG.TDI.RD requested hash length exceeds scratch page; truncating"
+            );
+        }
+
+        let tdi_rd_device_attestion_hash_bytes = &tdi_rd_attestation_page[..hash_bytes_len];
+        let tdi_rd_device_attestion_hash_hex = tdi_rd_device_attestion_hash_bytes
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        tracing::info!(
+            requested_hash_bytes_1,
+            hash_bytes_len_1,
+            tdi_rd_device_attestion_hash_hex = %tdi_rd_device_attestion_hash_hex,
+            "read device attestation hash bytes from TDG.TDI.RD GPA buffer"
+        );*/
+
+        let tdi_report_buffer = device
+            .tdisp_get_device_report(&TdispReportType::InterfaceReport)
+            .await
+            .context("failed to retrieve TDI report")?;
+
+        tracing::info!(
+            ?tdi_report_buffer,
+            "received TDI report during TDISP startup"
+        );
+
+        let tdi_report_sha384 = Sha384::digest(&tdi_report_buffer);
+        let tdi_report_sha384_hex = tdi_report_sha384
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        tracing::info!(
+            tdi_report_len = tdi_report_buffer.len(),
+            tdi_report_sha384 = %tdi_report_sha384_hex,
+            "computed SHA-384 digest for TDI report"
+        );
+
+        let tdi_report = tdisp::devicereport::deserialize_tdi_report(&tdi_report_buffer)
+            .context("failed to deserialize TDI report")?;
+
+        tracing::info!(
+            ?tdi_report,
+            "received TDI report during TDISP startup"
+        );
+
+        match Self::tdcall_tdi_start(tdi_device_id, tdi_rd_bindsession_value) {
+            Ok(()) => {
+                tracing::info!(
+                    gfunction_id = tdi_device_id,
+                    bind_session_id = tdi_rd_bindsession_value,
+                    "TDG.TDI.START tdcall completed during TDISP startup"
+                );
+            }
+            Err(err) => {
+                tracing::error!(
+                    gfunction_id = tdi_device_id,
+                    bind_session_id = tdi_rd_bindsession_value,
+                    error = %err,
+                    "TDG.TDI.START tdcall failed during TDISP startup"
+                );
+                return Err(err).context("failed TDG.TDI.START tdcall");
+            }
+        }
+
+        if !mmio_size.is_multiple_of(user_driver::memory::PAGE_SIZE64) {
+            anyhow::bail!("MMIO size is not page-aligned for TDI range size field");
+        }
+
+        let mmio_range_size = u32::try_from(mmio_size / user_driver::memory::PAGE_SIZE64)
+            .context("MMIO page count exceeds 32-bit TDI range size field")?;
+
+        let mmio_range_size_offset = TdiRangeSizeOffset {
+            range_size: mmio_range_size,
+            range_offset: 0,
+        };
+        let mmio_range_size_offset_u64 =
+            (u64::from(mmio_range_size_offset.range_offset) << 32)
+                | u64::from(mmio_range_size_offset.range_size);
+
+
+        match Self::tdcall_tdi_mmio_accept(mmio_gpa, 0, tdi_device_id, mmio_size) {
+            Ok(()) => {
+                tracing::info!(
+                    gfunction_id = tdi_device_id,
+                    mmio_base_addr = mmio_gpa,
+                    mmio_range_idx = 0,
+                    range_size_offset = mmio_size,
+                    "TDG.TDI.MMIO.ACCEPT tdcall completed during TDISP startup"
+                );
+            }
+            Err(err) => {
+                tracing::error!(
+                    gfunction_id = tdi_device_id,
+                    mmio_base_addr = mmio_gpa,
+                    mmio_range_idx = 0,
+                    range_size_offset = mmio_size,
+                    error = %err,
+                    "TDG.TDI.MMIO.ACCEPT tdcall failed during TDISP startup"
+                );
+                return Err(err).context("failed TDG.TDI.MMIO.ACCEPT tdcall");
+            }
+        }
+        device
             .tdisp_start_device()
             .await
             .context("failed to start TDI device")?;
 
-        tracing::info!("TDISP startup flow completed");*/
+        tracing::info!("TDISP startup flow completed");
+
         Ok(())
     }
 }
