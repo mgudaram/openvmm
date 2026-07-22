@@ -24,6 +24,7 @@ use sidecar_client::SidecarVp;
 use std::cell::UnsafeCell;
 use std::os::fd::AsRawFd;
 use tdcall::Tdcall;
+use tdcall::tdcall_dmar_accept;
 use tdcall::tdcall_tdi_mmio_accept;
 use tdcall::tdcall_tdi_start;
 use tdcall::tdcall_vp_invgla;
@@ -129,6 +130,16 @@ impl MshvVtl {
         } else {
             Err(output)
         }
+    }
+
+    /// Issues TDG.DMAR.ACCEPT via tdcall.
+    pub fn tdx_dmar_accept_via_tdcall(
+        &self,
+        gfunction_id: u64,
+        target: u64,
+    ) -> Result<(), TdCallResultCode> {
+        tdcall_dmar_accept(&mut MshvVtlTdcall(self), gfunction_id, target)
+            .map_err(|err| err.code())
     }
 }
 

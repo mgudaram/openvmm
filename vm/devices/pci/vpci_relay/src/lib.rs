@@ -124,6 +124,14 @@ pub struct TdiRangeSizeOffset {
     pub range_offset: u32,
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct DmarTarget {
+    pub vm_idx: u8,
+    pub reserved: [u8; 7],
+}
+
+
 impl RelayedDevice {
     async fn remove(self) {
         self.bus_unit.remove().await;
@@ -229,6 +237,16 @@ impl VpciRelay {
                 output.range_size_offset
             )
         })
+    }
+
+    fn tdcall_dmar_accept(gfunction_id: u64, target: u64) -> anyhow::Result<()> {
+        let mshv = hcl::ioctl::Mshv::new().context("failed to open /dev/mshv")?;
+        let vtl = mshv
+            .create_vtl()
+            .context("failed to open mshv_vtl device")?;
+
+        vtl.tdx_dmar_accept_via_tdcall(gfunction_id, target)
+            .map_err(|err| anyhow::anyhow!("tdcall dmar accept failed: {err:?}"))
     }
 
     /// Creates a new VPCI relay.
@@ -498,7 +516,7 @@ impl VpciRelay {
         mmio_gpa: u64,
         mmio_size: u64,
     ) -> anyhow::Result<()> {
-        /*let device_interface_info = match device.tdisp_get_device_interface_info().await {
+        let device_interface_info = match device.tdisp_get_device_interface_info().await {
             Ok(info) => info,
             Err(err) => {
                 tracing::debug!(
@@ -514,26 +532,6 @@ impl VpciRelay {
             "TDISP-capable device detected, executing startup flow"
         );
 
-        */
-
-        /*let tdi_report = device
-            .tdisp_get_tdi_report()
-            .await
-            .context("failed to retrieve TDI report")?;
-
-        tracing::info!(
-            ?tdi_report,
-            "received TDI report during TDISP startup"
-        );
-
-        // TODO TDISP: Integrate report verification/attestation policy before
-        // allowing device usage in production-hardening mode.
-        device
-            .tdisp_start_device()
-            .await
-            .context("failed to start TDI device")?;
-
-        tracing::info!("TDISP startup flow completed");*/
         let tdi_support = device
             .tdisp_get_tdi_support()
             .await
@@ -555,15 +553,28 @@ impl VpciRelay {
             "received TDI device ID: {:x} during TDISP startup", tdi_device_id
         );
 
-        device
-            .tdisp_bind_interface()
-            .await
-            .context("failed to bind TDISP interface")?;
+        let bind_result = device.tdisp_bind_interface().await;
+        match &bind_result {
+            Ok(()) => {
+                tracing::info!(
+                    tdi_device_id,
+                    "TDISP interface bind succeeded"
+                );
+            }
+            Err(err) => {
+                tracing::error!(
+                    error = %err,
+                    tdi_device_id,
+                    "TDISP interface bind failed with error 0xc0350071 or similar; continuing to diagnose"
+                );
+                // Don't fail immediately; continue to get interface status for diagnostics
+            }
+        }
 
         let tdi_status = device
             .tdisp_get_tdi_interface_status()
             .await
-            .context("failed to retrieve TDI device ID")?;
+            .context("failed to retrieve TDI interface status")?;
 
         tracing::info!(
             "received TDI tdi_status: {:x} during TDISP startup", tdi_status
@@ -726,6 +737,24 @@ impl VpciRelay {
             }
         }
 
+        let start_result = device.tdisp_start_device().await;
+        match &start_result {
+            Ok(()) => {
+                tracing::info!(
+                    tdi_device_id,
+                    "TDISP interface start succeeded"
+                );
+            }
+            Err(err) => {
+                tracing::error!(
+                    error = %err,
+                    tdi_device_id,
+                    "TDISP interface start failed with error; continuing to diagnose"
+                );
+                // Don't fail immediately; continue to for diagnostics
+            }
+        }
+
         if !mmio_size.is_multiple_of(user_driver::memory::PAGE_SIZE64) {
             anyhow::bail!("MMIO size is not page-aligned for TDI range size field");
         }
@@ -733,16 +762,30 @@ impl VpciRelay {
         let mmio_range_size = u32::try_from(mmio_size / user_driver::memory::PAGE_SIZE64)
             .context("MMIO page count exceeds 32-bit TDI range size field")?;
 
-        let mmio_range_size_offset = TdiRangeSizeOffset {
+        // Find the private (TEE) MMIO range from the TDI report
+        let range_offset = tdi_report
+            .mmio_interface_info
+            .iter()
+            .find(|range| !range.flags.is_non_tee_mem())
+            .map(|range| range.range_id as u32)
+            .context("no private MMIO range found in TDI report")?;
+
+        tracing::info!(
+            mmio_range_size,
+            range_offset,
+            "extracted TDI range parameters for TDISP startup"
+        );
+
+        /*let mmio_range_size_offset = TdiRangeSizeOffset {
             range_size: mmio_range_size,
-            range_offset: 0,
+            range_offset: range_offset,
         };
         let mmio_range_size_offset_u64 =
             (u64::from(mmio_range_size_offset.range_offset) << 32)
                 | u64::from(mmio_range_size_offset.range_size);
 
 
-        match Self::tdcall_tdi_mmio_accept(mmio_gpa, 0, tdi_device_id, mmio_size) {
+        match Self::tdcall_tdi_mmio_accept(mmio_gpa, mmio_range_size_offset_u64, tdi_device_id, mmio_size) {
             Ok(()) => {
                 tracing::info!(
                     gfunction_id = tdi_device_id,
@@ -763,11 +806,42 @@ impl VpciRelay {
                 );
                 return Err(err).context("failed TDG.TDI.MMIO.ACCEPT tdcall");
             }
+        }*/
+
+        let dmar_target = DmarTarget {
+            vm_idx: 1,
+            reserved: [0; 7],
+        };
+        
+        let dmar_target_u64 = u64::from_le_bytes([
+            dmar_target.vm_idx,
+            dmar_target.reserved[0],
+            dmar_target.reserved[1],
+            dmar_target.reserved[2],
+            dmar_target.reserved[3],
+            dmar_target.reserved[4],
+            dmar_target.reserved[5],
+            dmar_target.reserved[6],
+        ]);
+
+        // Accept DMAR
+        match Self::tdcall_dmar_accept(tdi_device_id, dmar_target_u64) {
+            Ok(()) => {
+                tracing::info!(
+                    gfunction_id = tdi_device_id,
+                    target = dmar_target_u64,
+                    "TDG.DMAR.ACCEPT tdcall completed during TDISP startup"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    gfunction_id = tdi_device_id,
+                    target = dmar_target_u64,
+                    error = %err,
+                    "TDG.DMAR.ACCEPT tdcall failed; continuing TDISP startup"
+                );
+            }
         }
-        device
-            .tdisp_start_device()
-            .await
-            .context("failed to start TDI device")?;
 
         tracing::info!("TDISP startup flow completed");
 

@@ -1027,3 +1027,38 @@ pub fn tdcall_tdi_mmio_accept(
     }
 }
 
+/// Issue a TDG.DMAR.ACCEPT call.
+pub fn tdcall_dmar_accept(
+    call: &mut impl Tdcall,
+    gfunction_id: u64,
+    target: u64,
+) -> Result<(), TdCallResult> {
+    let input = TdcallInput {
+        leaf: TdCallLeaf::DMAR_ACCEPT,
+        rcx: gfunction_id,
+        rdx: target,
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+
+    let output = call.tdcall(input);
+
+    tracing_no_std::trace!(
+        gfunction_id,
+        target,
+        tdcall_result = u64::from(output.rax)
+    );
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(()),
+        _ => Err(output.rax),
+    }
+}
+
