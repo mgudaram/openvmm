@@ -501,6 +501,11 @@ impl VpciDevice {
 
     /// Writes device configuration space.
     pub fn write_cfg(&self, offset: u16, value: u32) {
+        tracing::info!(
+            offset,
+            value = format!("{:#x}", value),
+            "VpciDevice::write_cfg called"
+        );
         tracing::trace!(?offset, value, "config space write");
         let mut shadows = self.shadows.lock();
         let shadows = &mut *shadows;
@@ -509,11 +514,19 @@ impl VpciDevice {
             HeaderType00::STATUS_COMMAND => {
                 let new_command = Command::from(value as u16);
                 if new_command.mmio_enabled() && !shadows.command.mmio_enabled() {
+                    tracing::info!("MMIO enable transition: flushing BAR shadows to host");
                     // Flush the BAR shadow to the device.
                     for (i, &bar) in shadows.bars.iter().enumerate() {
                         let bar_offset = HeaderType00::BAR0.0 + (i as u16 * 4);
+                        tracing::info!(
+                            bar_index = i,
+                            bar_offset,
+                            mmio_range_addr = format!("{:#x}", bar),
+                            "Flushing BAR to host config space"
+                        );
                         accessor.write(self.dev.id, bar_offset, bar);
                     }
+                    tracing::info!("BAR flush complete: all MMIO ranges sent to host");
                 }
                 shadows.command = new_command;
             }
@@ -527,7 +540,17 @@ impl VpciDevice {
                 // is enabled to avoid wasting time writing probe values to the
                 // host.
                 let i = (offset - HeaderType00::BAR0.0) as usize / 4;
-                shadows.bars[i] = value & self.bar_masks[i] | self.bar_rao[i];
+                let masked_value = value & self.bar_masks[i] | self.bar_rao[i];
+                shadows.bars[i] = masked_value;
+                tracing::info!(
+                    bar_index = i,
+                    offset,
+                    guest_wrote = format!("{:#x}", value),
+                    bar_mask = format!("{:#x}", self.bar_masks[i]),
+                    bar_rao = format!("{:#x}", self.bar_rao[i]),
+                    final_shadow_value = format!("{:#x}", masked_value),
+                    "BAR probe/write: guest wrote value, will shadow until MMIO enabled"
+                );
                 return;
             }
             _ => {}

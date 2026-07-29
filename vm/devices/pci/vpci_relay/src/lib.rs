@@ -36,7 +36,7 @@ use std::future::poll_fn;
 use std::sync::Arc;
 use std::task::Poll;
 use user_driver::DmaClient;
-use user_driver::memory::MemoryBlock;
+use user_driver::lockmem::LockedMemorySpawner;
 use vmbus_client::driver::OpenParams;
 use vmbus_server::Guid;
 use vmcore::device_state::ChangeDeviceState;
@@ -601,19 +601,57 @@ impl VpciRelay {
         );
 
         const TDI_RD_FIELD_REPORT_HASH: u64 = 3;
-        let tdi_rd_report_hash_gpa = 0;
+        
+        // Allocate private VTL2 DRAM page for TDI report hash.
+        // Must use LockedMemorySpawner (private VTL2 RAM), NOT dma_client which gives
+        // shared (host-visible) memory on TDX hardware-isolated VMs.
+        let tdi_report_hash_mem = LockedMemorySpawner
+            .allocate_dma_buffer(4096)
+            .context("failed to allocate private DRAM page for TDI report hash")?;
+        let tdi_rd_report_hash_gpa = tdi_report_hash_mem.pfns()[0] * user_driver::memory::PAGE_SIZE64;
+        
+        tracing::info!(
+            gfunction_id = tdi_device_id,
+            tdi_rd_report_hash_gpa = format!("{:#x}", tdi_rd_report_hash_gpa),
+            pfn = tdi_report_hash_mem.pfns()[0],
+            "Allocated private VTL2 DRAM page for TDI report hash"
+        );
+
+        let mut tdi_rd_report_hash_hex_from_gpa = None;
 
         match Self::tdcall_tdi_rd(
             tdi_device_id,
             TDI_RD_FIELD_REPORT_HASH,
-            0,
+            tdi_rd_report_hash_gpa,
         ) {
             Ok(tdi_rd_report_hash_value) => {
+                let requested_hash_bytes =
+                    usize::try_from(tdi_rd_report_hash_value).unwrap_or(usize::MAX);
+                let hash_bytes_len = requested_hash_bytes.min(tdi_report_hash_mem.len());
+                if requested_hash_bytes > tdi_report_hash_mem.len() {
+                    tracing::warn!(
+                        requested_hash_bytes,
+                        buffer_len = tdi_report_hash_mem.len(),
+                        "TDG.TDI.RD requested hash length exceeds allocated page; truncating"
+                    );
+                }
+
+                let mut tdi_rd_report_hash_bytes = vec![0u8; hash_bytes_len];
+                tdi_report_hash_mem.read_at(0, &mut tdi_rd_report_hash_bytes);
+                let tdi_rd_report_hash_hex = tdi_rd_report_hash_bytes
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>();
+                tdi_rd_report_hash_hex_from_gpa = Some(tdi_rd_report_hash_hex.clone());
+
                 tracing::info!(
                     gfunction_id = tdi_device_id,
                     field = TDI_RD_FIELD_REPORT_HASH,
                     gpa = tdi_rd_report_hash_gpa,
                     tdi_rd_report_hash_value,
+                    requested_hash_bytes,
+                    hash_bytes_len,
+                    tdi_rd_report_hash_hex = %tdi_rd_report_hash_hex,
                     "TDG.TDI.RD tdcall completed during TDISP startup"
                 );
             }
@@ -653,10 +691,12 @@ impl VpciRelay {
         );
 
         const TDI_RD_FIELD_DEVICE_ATTESTATION_HASH: u64 = 4;
-        // Allocate a 4KB scratch buffer and pass its address as the input
-        // for TDG.TDI.RD in this prototype flow.
-        let tdi_rd_attestation_page = vec![0u8; 4096];
-        let tdi_rd_attestation_pageaddr: u64 = tdi_rd_attestation_page.as_ptr() as u64;
+        // Allocate private VTL2 DRAM page for device attestation hash.
+        // Must use LockedMemorySpawner (private VTL2 RAM), not dma_client (shared on TDX).
+        let tdi_rd_attestation_page = LockedMemorySpawner
+            .allocate_dma_buffer(4096)
+            .context("failed to allocate private DRAM page for device attestation hash")?;
+        let tdi_rd_attestation_pageaddr: u64 = tdi_rd_attestation_page.pfns()[0] * user_driver::memory::PAGE_SIZE64;
 
 
 
@@ -709,6 +749,25 @@ impl VpciRelay {
             tdi_report_sha384 = %tdi_report_sha384_hex,
             "computed SHA-384 digest for TDI report"
         );
+
+        if let Some(tdi_rd_report_hash_hex_from_gpa) = tdi_rd_report_hash_hex_from_gpa {
+            if tdi_rd_report_hash_hex_from_gpa == tdi_report_sha384_hex {
+                tracing::info!(
+                    tdi_report_sha384 = %tdi_report_sha384_hex,
+                    "TDG.TDI.RD report hash matches SHA-384 digest of TDI report"
+                );
+            } else {
+                tracing::warn!(
+                    tdi_rd_report_hash_hex_from_gpa = %tdi_rd_report_hash_hex_from_gpa,
+                    tdi_report_sha384 = %tdi_report_sha384_hex,
+                    "TDG.TDI.RD report hash does not match SHA-384 digest of TDI report"
+                );
+            }
+        } else {
+            tracing::warn!(
+                "skipping TDI report hash verification because TDG.TDI.RD report hash was unavailable"
+            );
+        }
 
         let tdi_report = tdisp::devicereport::deserialize_tdi_report(&tdi_report_buffer)
             .context("failed to deserialize TDI report")?;
@@ -866,6 +925,11 @@ impl PciConfigSpace for RelayedVpciDevice {
     }
 
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
+        tracing::info!(
+            offset,
+            value = format!("{:#x}", value),
+            "RelayedVpciDevice::pci_cfg_write routing to VpciDevice"
+        );
         self.0.write_cfg(offset, value);
         IoResult::Ok
     }
