@@ -304,7 +304,7 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
         .map_err(|_| PacketError::PacketTooSmall("header"))?
         .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
-    tracing::trace!(?message_type, "parsing vpci packet");
+    tracing::info!(?message_type, "parsing vpci packet");
 
     let data = match message_type {
         protocol::MessageType::ASSIGNED_RESOURCES
@@ -322,6 +322,8 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
                 .iter()
                 .map(MmioResource::from_protocol)
                 .collect::<Result<Vec<_>, _>>()?;
+
+            tracing::info!(?mmio_ranges, "parsed mmio_ranges from ASSIGNED_RESOURCES* packet");
 
             let (reply_type, interrupts) = match message_type {
                 protocol::MessageType::ASSIGNED_RESOURCES => (
@@ -794,14 +796,14 @@ impl ReadyState {
                 return Err(WorkerError::UnexpectedPacketOrder);
             }
             PacketData::FdoD0Entry { mmio_start } => {
-                tracing::trace!(?mmio_start, ?dev.instance_id, "FDO D0 entry");
+                tracing::info!(mmio_start = format_args!("{:#x}", mmio_start), instance_id = ?dev.instance_id, "FDO D0 entry: mmio_start");
                 dev.config_space.map(mmio_start);
                 self.send_device = true;
                 // Send the completion after the device has been sent.
                 self.send_completion = transaction_id;
             }
             PacketData::FdoD0Exit => {
-                tracing::trace!(?dev.instance_id, "FDO D0 exit");
+                tracing::info!(?dev.instance_id, "FDO D0 exit");
                 dev.config_space.unmap();
                 conn.send_completion(transaction_id, &protocol::Status::SUCCESS, &[])?;
             }
@@ -883,6 +885,13 @@ impl ReadyState {
                     }
                     DeviceRequest::GetResources => {
                         let bars = dev.bars();
+                        tracing::info!(
+                            instance_id = ?dev.instance_id,
+                            bars = ?bars.iter().enumerate().map(|(i, b)| {
+                                format!("bar{i}: addr={:#x} len={:#x}", b.address, b.len)
+                            }).collect::<Vec<_>>(),
+                            "GetResources: returning BAR resources to guest"
+                        );
                         conn.send_completion(
                             transaction_id,
                             &protocol::PartialResourceList {

@@ -305,8 +305,6 @@ impl MmioIntercept for VpciBusDevice {
     }
 
     fn mmio_write(&mut self, addr: u64, data: &[u8]) -> IoResult {
-        tracing::info!(addr, "VPCI bus MMIO write");
-
         // Remove vtom, as the guest may access it with or without set.
         let addr = addr & !self.vtom.unwrap_or(0);
 
@@ -314,6 +312,21 @@ impl MmioIntercept for VpciBusDevice {
             Ok(reg) => reg,
             Err(err) => return IoResult::Err(err),
         };
+
+        match &reg {
+            Register::SlotNumber => tracing::info!(
+                addr = format_args!("{:#x}", addr),
+                data = format_args!("{:02x?}", data),
+                "VPCI bus MMIO write (SlotNumber)"
+            ),
+            Register::ConfigSpace(offset) => tracing::info!(
+                addr = format_args!("{:#x}", addr),
+                cfg_offset = format_args!("{:#x}", offset),
+                data = format_args!("{:02x?}", data),
+                "VPCI bus MMIO write (ConfigSpace)"
+            ),
+        }
+
         match reg {
             Register::SlotNumber => {
                 let Ok(data) = data.try_into().map(u32::from_ne_bytes) else {

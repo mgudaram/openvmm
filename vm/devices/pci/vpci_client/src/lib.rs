@@ -298,11 +298,15 @@ impl ConfigSpaceAccessor {
             tracelimit::warn_ratelimited!(?id, offset, "device is gone, ignoring cfg write");
             return;
         }
-        tracing::trace!(?id, offset, value, "host config space write");
-        self.mem.write(
-            self.base_gpa + protocol::MMIO_PAGE_CONFIG_SPACE + offset as u64,
-            value,
+        let addr = self.base_gpa + protocol::MMIO_PAGE_CONFIG_SPACE + offset as u64;
+        tracing::info!(
+            ?id,
+            offset,
+            addr = format_args!("{:#x}", addr),
+            value = format_args!("{:#x}", value),
+            "host config space write"
         );
+        self.mem.write(addr, value);
     }
 }
 
@@ -501,9 +505,14 @@ impl VpciDevice {
 
     /// Writes device configuration space.
     pub fn write_cfg(&self, offset: u16, value: u32) {
+        let mmio_addr = {
+            let accessor = self.config_space.lock();
+            accessor.base_gpa + protocol::MMIO_PAGE_CONFIG_SPACE + offset as u64
+        };
         tracing::info!(
             offset,
-            value = format!("{:#x}", value),
+            mmio_addr = format_args!("{:#x}", mmio_addr),
+            value = format_args!("{:#x}", value),
             "VpciDevice::write_cfg called"
         );
         tracing::trace!(?offset, value, "config space write");
