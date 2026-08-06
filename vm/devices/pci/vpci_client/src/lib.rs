@@ -39,6 +39,7 @@ use openhcl_tdisp::TdispVirtualDeviceInterface;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
+use pci_core::bar_mapping::BarMappings;
 use pci_core::spec::cfg_space::Command;
 use pci_core::spec::cfg_space::HeaderType00;
 use pci_core::spec::hwid::HardwareIds;
@@ -219,6 +220,10 @@ pub struct VpciDevice {
     serial_num: u32,
     #[inspect(flatten)]
     dev: InUseDevice,
+    #[inspect(skip)]
+    tdi_device_id: Mutex<Option<u64>>,
+    #[inspect(skip)]
+    tdi_mmio_ranges: Mutex<Vec<TdiMmioRangeInfo>>,
     shadows: Mutex<ConfigSpaceShadows>,
     #[inspect(hex, iter_by_index)]
     bar_masks: [u32; 6],
@@ -244,6 +249,12 @@ struct ConfigSpaceShadows {
     command: Command,
     #[inspect(hex, iter_by_index)]
     bars: [u32; 6],
+}
+
+#[derive(Debug, Clone)]
+struct TdiMmioRangeInfo {
+    num_4k_pages: u32,
+    is_non_tee_mem: bool,
 }
 
 impl ConfigSpaceAccessor {
@@ -412,6 +423,8 @@ impl VpciDeviceDescription {
         tracing::info!("init(): after bar_rao");
 
         let device = VpciDevice {
+            tdi_device_id: Mutex::new(None),
+            tdi_mmio_ranges: Mutex::new(Vec::new()),
             shadows: Mutex::new(ConfigSpaceShadows {
                 command: Command::new(),
                 bars: [0; 6],
@@ -458,6 +471,34 @@ impl Stream for VpciDeviceEject {
 }
 
 impl VpciDevice {
+    fn tdcall_tdi_mmio_accept(
+        mmio_base_addr: u64,
+        mmio_range_idx: u64,
+        gfunction_id: u64,
+        range_size_offset: u64,
+    ) -> anyhow::Result<()> {
+        let mshv = hcl::ioctl::Mshv::new().context("failed to open /dev/mshv")?;
+        let vtl = mshv
+            .create_vtl()
+            .context("failed to open mshv_vtl device")?;
+
+        vtl.tdx_tdi_mmio_accept_via_tdcall(
+            mmio_base_addr,
+            mmio_range_idx,
+            gfunction_id,
+            range_size_offset,
+        )
+        .map_err(|output| {
+            anyhow::anyhow!(
+                "tdcall tdi mmio accept failed: status={:?} gpa_address={:#x} range_size_offset={:#x}",
+                output.status,
+                output.gpa_address,
+                output.range_size_offset
+            )
+        })
+    }
+
+
     /// Reads device configuration space.
     ///
     /// Some values will be handled without communicating with the host.
@@ -519,6 +560,7 @@ impl VpciDevice {
         let mut shadows = self.shadows.lock();
         let shadows = &mut *shadows;
         let mut accessor = self.config_space.lock();
+        let mut should_accept_mmio = false;
         match HeaderType00(offset) {
             HeaderType00::STATUS_COMMAND => {
                 let new_command = Command::from(value as u16);
@@ -536,6 +578,7 @@ impl VpciDevice {
                         accessor.write(self.dev.id, bar_offset, bar);
                     }
                     tracing::info!("BAR flush complete: all MMIO ranges sent to host");
+                    should_accept_mmio = true;
                 }
                 shadows.command = new_command;
             }
@@ -565,6 +608,123 @@ impl VpciDevice {
             _ => {}
         }
         accessor.write(self.dev.id, offset, value);
+
+        if should_accept_mmio {
+            let Some(tdi_device_id) = *self.tdi_device_id.lock() else {
+                tracing::info!(
+                    "skipping TDG.TDI.MMIO.ACCEPT because TDI device ID is unavailable"
+                );
+                return;
+            };
+            const PAGE_SIZE_4K: u64 = 4096;
+            let bars = BarMappings::parse(&shadows.bars, &self.bar_masks);
+            let report_mmio_ranges = self.tdi_mmio_ranges.lock().clone();
+            let mut matched_report_entries = vec![false; report_mmio_ranges.len()];
+
+            for bar in bars.iter() {
+                let mmio_base_addr = bar.base_address;
+
+                if !bar.len.is_multiple_of(PAGE_SIZE_4K) {
+                    tracing::info!(
+                        bar_index = bar.index,
+                        mmio_base_addr,
+                        mmio_len = bar.len,
+                        gfunction_id = tdi_device_id,
+                        "skipping TDG.TDI.MMIO.ACCEPT for BAR with non-4K-aligned length"
+                    );
+                    continue;
+                }
+
+                let range_size_offset = bar.len / PAGE_SIZE_4K;
+                let Ok(range_size_pages_u32) = u32::try_from(range_size_offset) else {
+                    tracing::warn!(
+                        bar_index = bar.index,
+                        mmio_base_addr,
+                        mmio_len = bar.len,
+                        gfunction_id = tdi_device_id,
+                        "skipping TDG.TDI.MMIO.ACCEPT because BAR page count does not fit in u32"
+                    );
+                    continue;
+                };
+
+                let mut private_candidates = report_mmio_ranges
+                    .iter()
+                    .enumerate()
+                    .filter(|(idx, entry)| {
+                        !matched_report_entries[*idx]
+                            && entry.num_4k_pages == range_size_pages_u32
+                            && !entry.is_non_tee_mem
+                    });
+
+                let selected_index = private_candidates.next().map(|(idx, _)| idx);
+
+                let Some(report_index) = selected_index else {
+                    tracing::warn!(
+                        bar_index = bar.index,
+                        mmio_base_addr,
+                        mmio_len = bar.len,
+                        bar_num_4k_pages = range_size_offset,
+                        tdi_mmio_ranges = ?report_mmio_ranges,
+                        gfunction_id = tdi_device_id,
+                        "skipping TDG.TDI.MMIO.ACCEPT because no InterfaceReport MMIO range matched BAR page count"
+                    );
+                    continue;
+                };
+
+                let candidate_count = report_mmio_ranges
+                    .iter()
+                    .enumerate()
+                    .filter(|(idx, entry)| {
+                        !matched_report_entries[*idx] && entry.num_4k_pages == range_size_pages_u32
+                    })
+                    .count();
+
+                if candidate_count > 1 {
+                    tracing::info!(
+                        bar_index = bar.index,
+                        mmio_base_addr,
+                        mmio_len = bar.len,
+                        selected_mmio_range_idx = report_index,
+                        bar_num_4k_pages = range_size_offset,
+                        gfunction_id = tdi_device_id,
+                        "multiple InterfaceReport MMIO ranges matched BAR page count; selected preferred candidate"
+                    );
+                }
+
+                if report_mmio_ranges[report_index].is_non_tee_mem {
+                    tracing::info!(
+                        bar_index = bar.index,
+                        mmio_base_addr,
+                        mmio_len = bar.len,
+                        selected_mmio_range_idx = report_index,
+                        gfunction_id = tdi_device_id,
+                        "skipping TDG.TDI.MMIO.ACCEPT because matched InterfaceReport range is non-TEE memory"
+                    );
+                    continue;
+                }
+
+                matched_report_entries[report_index] = true;
+                let mmio_range_idx = report_index as u64;
+
+                if let Err(err) = Self::tdcall_tdi_mmio_accept(
+                    mmio_base_addr,
+                    mmio_range_idx,
+                    tdi_device_id,
+                    range_size_offset,
+                ) {
+                    tracing::info!(
+                        error = %err,
+                        bar_index = bar.index,
+                        mmio_base_addr,
+                        mmio_len = bar.len,
+                        mmio_range_idx,
+                        gfunction_id = tdi_device_id,
+                        range_size_offset,
+                        "TDG.TDI.MMIO.ACCEPT call failed"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -777,7 +937,21 @@ impl TdispVirtualDeviceInterface for VpciDevice {
             .await?;
 
         match res.response::<TdispCommandResponseGetTdiReport>() {
-            Ok(r) => Ok(r.report_buffer),
+            Ok(r) => {
+                if matches!(*report_type, TdispReportType::InterfaceReport) {
+                    if let Ok(report) = tdisp::devicereport::deserialize_tdi_report(&r.report_buffer) {
+                        *self.tdi_mmio_ranges.lock() = report
+                            .mmio_interface_info
+                            .iter()
+                            .map(|entry| TdiMmioRangeInfo {
+                                num_4k_pages: entry.num_4k_pages,
+                                is_non_tee_mem: entry.flags.is_non_tee_mem(),
+                            })
+                            .collect();
+                    }
+                }
+                Ok(r.report_buffer)
+            }
             Err(err) => Err(anyhow::anyhow!(
                 "error response in tdisp_get_device_report: {err}"
             )),
@@ -805,7 +979,9 @@ impl TdispVirtualDeviceInterface for VpciDevice {
             return Err(anyhow::anyhow!("unexpected buffer size for TDI device ID"));
         }
 
-        Ok(u64::from_le_bytes(buffer.try_into().unwrap()))
+        let tdi_device_id = u64::from_le_bytes(buffer.try_into().unwrap());
+        *self.tdi_device_id.lock() = Some(tdi_device_id);
+        Ok(tdi_device_id)
     }
 
     async fn tdisp_get_tdi_interface_status(&self) -> anyhow::Result<u64> {
