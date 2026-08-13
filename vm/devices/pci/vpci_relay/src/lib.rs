@@ -26,6 +26,7 @@ use futures::StreamExt as _;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
+use openhcl_tdisp::TdispDeviceInfoType;
 use openhcl_tdisp::TdispVirtualDeviceInterface;
 use openhcl_tdisp::TdispReportType;
 use pci_core::spec::hwid::HardwareIds;
@@ -344,6 +345,7 @@ impl VpciRelay {
 
         let instance_id = offer_info.offer.instance_id;
 
+        // 2 4k pages for configuration space mimicking
         let mmio_gpa = self.mmio_range.start() + (device_slot as u64) * vpci_client::MMIO_SIZE;
         let mmio_size = vpci_client::MMIO_SIZE;
         let mmio = self.mmio_access.create_memory_access(mmio_gpa)?;
@@ -666,69 +668,6 @@ impl VpciRelay {
             }
         }
 
-
-
-        /*let requested_hash_bytes = usize::try_from(tdi_rd_report_hash_len).unwrap_or(usize::MAX);
-        let hash_bytes_len = requested_hash_bytes.min(tdi_rd_report_page.len());
-        if requested_hash_bytes > tdi_rd_report_page.len() {
-            tracing::warn!(
-                requested_hash_bytes,
-                buffer_len = tdi_rd_report_page.len(),
-                "TDG.TDI.RD requested hash length exceeds scratch page; truncating"
-            );
-        }
-
-        let tdi_rd_report_hash_bytes = &tdi_rd_report_page[..hash_bytes_len];
-        let tdi_rd_report_hash_hex = tdi_rd_report_hash_bytes
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
-        tracing::info!(
-            requested_hash_bytes,
-            hash_bytes_len,
-            tdi_rd_report_hash_hex = %tdi_rd_report_hash_hex,
-            "read device attestation hash bytes from TDG.TDI.RD GPA buffer"
-        );
-
-        const TDI_RD_FIELD_DEVICE_ATTESTATION_HASH: u64 = 4;
-        // Allocate private VTL2 DRAM page for device attestation hash.
-        // Must use LockedMemorySpawner (private VTL2 RAM), not dma_client (shared on TDX).
-        let tdi_rd_attestation_page = LockedMemorySpawner
-            .allocate_dma_buffer(4096)
-            .context("failed to allocate private DRAM page for device attestation hash")?;
-        let tdi_rd_attestation_pageaddr: u64 = tdi_rd_attestation_page.pfns()[0] * user_driver::memory::PAGE_SIZE64;
-
-
-
-        let tdi_rd_device_attestion_hash_len = Self::tdcall_tdi_rd(tdi_device_id, TDI_RD_FIELD_DEVICE_ATTESTATION_HASH, tdi_rd_attestation_pageaddr)?;
-        tracing::info!(
-            gfunction_id = tdi_device_id,
-            field = TDI_RD_FIELD_DEVICE_ATTESTATION_HASH,
-            tdi_rd_device_attestion_hash_len,
-            "TDG.TDI.RD tdcall completed during TDISP startup"
-        );
-        let requested_hash_bytes_1 = usize::try_from(tdi_rd_device_attestion_hash_len).unwrap_or(usize::MAX);
-        let hash_bytes_len_1 = requested_hash_bytes_1.min(tdi_rd_attestation_page.len());
-        if requested_hash_bytes_1 > tdi_rd_attestation_page.len() {
-            tracing::warn!(
-                requested_hash_bytes_1,
-                buffer_len = tdi_rd_attestation_page.len(),
-                "TDG.TDI.RD requested hash length exceeds scratch page; truncating"
-            );
-        }
-
-        let tdi_rd_device_attestion_hash_bytes = &tdi_rd_attestation_page[..hash_bytes_len];
-        let tdi_rd_device_attestion_hash_hex = tdi_rd_device_attestion_hash_bytes
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
-        tracing::info!(
-            requested_hash_bytes_1,
-            hash_bytes_len_1,
-            tdi_rd_device_attestion_hash_hex = %tdi_rd_device_attestion_hash_hex,
-            "read device attestation hash bytes from TDG.TDI.RD GPA buffer"
-        );*/
-
         let tdi_report_buffer = device
             .tdisp_get_device_report(&TdispReportType::InterfaceReport)
             .await
@@ -776,6 +715,98 @@ impl VpciRelay {
             ?tdi_report,
             "received TDI report during TDISP startup"
         );
+
+        // Query device info via the new GetDeviceInfo command path. Do not fail
+        // startup if unsupported so diagnostics can continue.
+        match device
+            .tdisp_get_device_info(&TdispDeviceInfoType::TdispReportDeviceInfo)
+            .await
+        {
+            Ok(device_info_buffer) => {
+                tracing::info!(
+                    ?device_info_buffer,
+                    "received GetDeviceInfo response during TDISP startup"
+                );
+
+                let tdi_deviceinfo_report_sha384 = Sha384::digest(&device_info_buffer);
+                let tdi_deviceinfo_report_sha384_hex = tdi_deviceinfo_report_sha384
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>();
+                tracing::info!(
+                    tdi_deviceinfo_report_len = device_info_buffer.len(),
+                    tdi_deviceinfo_report_sha384 = %tdi_deviceinfo_report_sha384_hex,
+                    "computed SHA-384 digest for TDI deviceinfo report"
+                );
+
+                const TDI_RD_FIELD_DEVICE_ATTESTATION_HASH: u64 = 4;
+                // Allocate private VTL2 DRAM page for device attestation hash.
+                // Must use LockedMemorySpawner (private VTL2 RAM), not dma_client (shared on TDX).
+                let tdi_rd_attestation_page = LockedMemorySpawner
+                    .allocate_dma_buffer(4096)
+                    .context("failed to allocate private DRAM page for device attestation hash")?;
+                let tdi_rd_attestation_pageaddr: u64 = tdi_rd_attestation_page.pfns()[0] * user_driver::memory::PAGE_SIZE64;
+
+                let tdi_rd_device_attestion_hash_len = Self::tdcall_tdi_rd(tdi_device_id, TDI_RD_FIELD_DEVICE_ATTESTATION_HASH, tdi_rd_attestation_pageaddr)?;
+                tracing::info!(
+                    gfunction_id = tdi_device_id,
+                    field = TDI_RD_FIELD_DEVICE_ATTESTATION_HASH,
+                    tdi_rd_device_attestion_hash_len,
+                    "TDG.TDI.RD tdcall completed during TDISP startup"
+                );
+
+                let requested_attestation_hash_bytes =
+                    usize::try_from(tdi_rd_device_attestion_hash_len).unwrap_or(usize::MAX);
+                let attestation_hash_bytes_len =
+                    requested_attestation_hash_bytes.min(tdi_rd_attestation_page.len());
+                if requested_attestation_hash_bytes > tdi_rd_attestation_page.len() {
+                    tracing::warn!(
+                        requested_attestation_hash_bytes,
+                        buffer_len = tdi_rd_attestation_page.len(),
+                        "TDG.TDI.RD requested device attestation hash length exceeds allocated page; truncating"
+                    );
+                }
+
+                let mut tdi_rd_device_attestation_hash_bytes = vec![0u8; attestation_hash_bytes_len];
+                tdi_rd_attestation_page.read_at(0, &mut tdi_rd_device_attestation_hash_bytes);
+                let tdi_rd_device_attestation_hash_hex = tdi_rd_device_attestation_hash_bytes
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>();
+
+                tracing::info!(
+                    gfunction_id = tdi_device_id,
+                    field = TDI_RD_FIELD_DEVICE_ATTESTATION_HASH,
+                    gpa = tdi_rd_attestation_pageaddr,
+                    requested_attestation_hash_bytes,
+                    attestation_hash_bytes_len,
+                    tdi_rd_device_attestation_hash_hex = %tdi_rd_device_attestation_hash_hex,
+                    "read device attestation hash via TDG.TDI.RD"
+                );
+
+                if tdi_rd_device_attestation_hash_hex == tdi_deviceinfo_report_sha384_hex {
+                    tracing::info!(
+                        tdi_deviceinfo_report_sha384 = %tdi_deviceinfo_report_sha384_hex,
+                        "TDG.TDI.RD device attestation hash matches SHA-384 digest of GetDeviceInfo buffer"
+                    );
+                } else {
+                    tracing::warn!(
+                        tdi_rd_device_attestation_hash_hex = %tdi_rd_device_attestation_hash_hex,
+                        tdi_deviceinfo_report_sha384 = %tdi_deviceinfo_report_sha384_hex,
+                        "TDG.TDI.RD device attestation hash does not match SHA-384 digest of GetDeviceInfo buffer"
+                    );
+                }
+                
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "GetDeviceInfo command failed; continuing TDISP startup"
+                );
+            }
+        }
+
+        
 
         match Self::tdcall_tdi_start(tdi_device_id, tdi_rd_bindsession_value) {
             Ok(()) => {
@@ -883,7 +914,7 @@ impl VpciRelay {
             dmar_target.reserved[6],
         ]);
 
-        // Accept DMAR
+        // Accept DMAR per L2 VM, currently doing it for guest kernel with vm_idx = 1
         match Self::tdcall_dmar_accept(tdi_device_id, dmar_target_u64) {
             Ok(()) => {
                 tracing::info!(

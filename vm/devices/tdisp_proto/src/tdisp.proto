@@ -107,6 +107,15 @@ enum TdispReportType {
   TDISP_REPORT_TYPE_CERTIFICATE_CHAIN = 7;
 }
 
+enum TdispDeviceInfoType {
+
+  // Invalid device info type.
+  TDISP_DEVICE_INFO_TYPE_INVALID = 0;
+
+  // Guest requests the report of the physical device.
+  TDISP_REPORT_DEVICE_INFO = 4;
+}
+
 // Represents the type of CVM technology the guest requests to use.
 // As new features are added by respective OEMs, this enum will be extended
 // if these protocols change.
@@ -143,6 +152,7 @@ message GuestToHostCommand {
     TdispCommandRequestGetTdiReport get_tdi_report = 4;
     TdispCommandRequestStartTdi start_tdi = 5;
     TdispCommandRequestUnbind unbind = 6;
+    TdispCommandRequestGetDeviceInfo get_device_info = 7;
   }
 }
 
@@ -166,6 +176,7 @@ message GuestToHostResponse {
     TdispCommandResponseGetTdiReport get_tdi_report = 6;
     TdispCommandResponseStartTdi start_tdi = 7;
     TdispCommandResponseUnbind unbind = 8;
+    TdispCommandResponseGetDeviceInfo get_device_info = 9;
   }
 }
 
@@ -187,6 +198,12 @@ message TdispCommandRequestBind {}
 message TdispCommandRequestGetTdiReport {
   // The type of report to request.
   TdispReportType report_type = 1;
+}
+
+// Get a device report from the host for the device.
+message TdispCommandRequestGetDeviceInfo {
+  // The type of report to request.
+  TdispDeviceInfoType info_type = 1;
 }
 
 // Transition the device to the Run state after successful attestation.
@@ -220,6 +237,12 @@ message TdispCommandResponseGetTdiReport {
 
   // The buffer containing the requested report.
   bytes report_buffer = 2;
+}
+
+// Response to TdispCommandRequestGetDeviceInfo.
+message TdispCommandResponseGetDeviceInfo {
+  // The buffer containing the requested device info.
+  bytes device_info_buffer = 1;
 }
 
 // Response to TdispCommandRequestStartTdi. Carries no payload.

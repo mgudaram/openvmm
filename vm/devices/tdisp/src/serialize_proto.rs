@@ -11,6 +11,7 @@ use tdisp_proto::GuestToHostResponse;
 use tdisp_proto::TdispGuestOperationErrorCode;
 use tdisp_proto::TdispGuestProtocolType;
 use tdisp_proto::TdispGuestUnbindReason;
+use tdisp_proto::TdispDeviceInfoType;
 use tdisp_proto::TdispReportType;
 use tdisp_proto::TdispTdiState;
 use tdisp_proto::guest_to_host_command::Command;
@@ -82,6 +83,8 @@ pub fn validate_command(command: &GuestToHostCommand) -> anyhow::Result<()> {
         require_enum!(req.guest_protocol_type, TdispGuestProtocolType)?;
     } else if let Some(Command::GetTdiReport(req)) = &command.command {
         require_enum!(req.report_type, TdispReportType)?;
+    } else if let Some(Command::GetDeviceInfo(req)) = &command.command {
+        require_enum!(req.info_type, TdispDeviceInfoType)?;
     } else if let Some(Command::Unbind(req)) = &command.command {
         require_enum!(req.unbind_reason, TdispGuestUnbindReason)?;
     }

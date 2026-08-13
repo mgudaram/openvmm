@@ -27,9 +27,11 @@ use openhcl_tdisp::GuestToHostResponse;
 use openhcl_tdisp::GuestToHostResponseExt;
 use openhcl_tdisp::TdispCommandResponseBind;
 use openhcl_tdisp::TdispCommandResponseGetDeviceInterfaceInfo;
+use openhcl_tdisp::TdispCommandResponseGetDeviceInfo;
 use openhcl_tdisp::TdispCommandResponseGetTdiReport;
 use openhcl_tdisp::TdispCommandResponseStartTdi;
 use openhcl_tdisp::TdispCommandResponseUnbind;
+use openhcl_tdisp::TdispDeviceInfoType;
 use openhcl_tdisp::TdispDeviceInterfaceInfo;
 use openhcl_tdisp::TdispGuestOperationErrorCode;
 use openhcl_tdisp::TdispGuestProtocolType;
@@ -498,7 +500,6 @@ impl VpciDevice {
         })
     }
 
-
     /// Reads device configuration space.
     ///
     /// Some values will be handled without communicating with the host.
@@ -832,6 +833,12 @@ impl TdispVirtualDeviceInterface for VpciDevice {
             ));
         }
 
+        tracing::info!(
+            payload_type = payload.type_name(),
+            data_length = serialized.len(),
+            "sending TDISP command payload"
+        );
+
         // Make a mesh call to send the VMBUS packet to the host and await a response
         // packet from the host.
         let res = self
@@ -954,6 +961,29 @@ impl TdispVirtualDeviceInterface for VpciDevice {
             }
             Err(err) => Err(anyhow::anyhow!(
                 "error response in tdisp_get_device_report: {err}"
+            )),
+        }
+    }
+
+    async fn tdisp_get_device_info(
+        &self,
+        info_type: &TdispDeviceInfoType,
+    ) -> anyhow::Result<Vec<u8>> {
+        let res = self
+            .send_tdisp_command(openhcl_tdisp::new_get_device_info_command(
+                self.dev.id.slot.into_bits() as u64,
+                *info_type,
+            ))
+            .await?;
+
+        if res.result == TdispGuestOperationErrorCode::Success as i32 && res.response.is_none() {
+            return Ok(Vec::new());
+        }
+
+        match res.response::<TdispCommandResponseGetDeviceInfo>() {
+            Ok(r) => Ok(r.device_info_buffer),
+            Err(err) => Err(anyhow::anyhow!(
+                "error response in tdisp_get_device_info: {err}"
             )),
         }
     }
@@ -1474,6 +1504,12 @@ impl WorkerState {
                         .context("failed to read tdisp command header")?;
 
                     let data_len = header.data_length as usize;
+                    tracing::info!(
+                        tx_id,
+                        header_data_length = header.data_length,
+                        data_len,
+                        "received TDISP response header"
+                    );
                     if data_len > MAX_VPCI_TDISP_COMMAND_SIZE {
                         rpc.fail(anyhow::anyhow!(
                             "Received TdispCommand data length exceeds maximum allowed: {} > {}",
@@ -1502,6 +1538,24 @@ impl WorkerState {
                     }
 
                     let host_response = openhcl_tdisp::deserialize_response(data.as_slice())
+                        .map_err(|err| {
+                            let preview_len = data.len().min(64);
+                            let preview = &data[..preview_len];
+                            let trailing_zero_bytes =
+                                data.iter().rev().take_while(|&&b| b == 0).count();
+
+                            tracing::error!(
+                                tx_id,
+                                ?header,
+                                data_len,
+                                preview_len,
+                                preview_bytes = ?preview,
+                                trailing_zero_bytes,
+                                error = err.as_ref() as &dyn std::error::Error,
+                                "failed to decode host TDISP response payload"
+                            );
+                            err
+                        })
                         .context("failed to deserialize tdisp response");
 
                     rpc.complete(host_response.map_err(mesh::error::RemoteError::new));

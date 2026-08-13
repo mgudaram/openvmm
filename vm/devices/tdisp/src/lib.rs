@@ -52,6 +52,7 @@ pub use tdisp_proto::GuestToHostResponse;
 pub use tdisp_proto::GuestToHostResponseExt;
 pub use tdisp_proto::TdispCommandResponseBind;
 pub use tdisp_proto::TdispCommandResponseGetDeviceInterfaceInfo;
+pub use tdisp_proto::TdispCommandResponseGetDeviceInfo;
 pub use tdisp_proto::TdispCommandResponseGetTdiReport;
 pub use tdisp_proto::TdispCommandResponseStartTdi;
 pub use tdisp_proto::TdispCommandResponseUnbind;
@@ -167,6 +168,20 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
                     }
                     None => {
                         error = TdispGuestOperationError::InvalidGuestProtocolRequest;
+                    }
+                }
+            }
+            Some(Command::GetDeviceInfo(req)) => {
+                let device_info = self.machine.request_device_info(req.info_type);
+
+                match device_info {
+                    Ok(device_info_buffer) => {
+                        response = Some(Response::GetDeviceInfo(TdispCommandResponseGetDeviceInfo {
+                            device_info_buffer,
+                        }));
+                    }
+                    Err(err) => {
+                        error = err;
                     }
                 }
             }
@@ -503,6 +518,9 @@ pub trait TdispGuestRequestInterface {
         report_type: TdispReportType,
     ) -> Result<Vec<u8>, TdispGuestOperationError>;
 
+    /// Request device info bytes from the host.
+    fn request_device_info(&mut self, info_type: i32) -> Result<Vec<u8>, TdispGuestOperationError>;
+
     /// Guest initiates a graceful unbind of the device. The guest might
     /// initiate an unbind for a variety of reasons:
     ///  - Device is being detached/deactivated and is no longer needed in a functional state
@@ -698,6 +716,39 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
             }
             Err(e) => {
                 tracing::error!("Failed to get device report from host: {e:?}");
+                Err(TdispGuestOperationError::HostFailedToProcessCommand)
+            }
+        }
+    }
+
+    /// Request device info bytes from the host without requiring the device to
+    /// be in the attestation states.
+    #[instrument(fields(device_id = %self.debug_device_id), skip(self))]
+    fn request_device_info(
+        &mut self,
+        info_type: i32,
+    ) -> Result<Vec<u8>, TdispGuestOperationError> {
+        self.ensure_negotiated_protocol()
+            .map_err(|_| TdispGuestOperationError::InvalidDeviceState)?;
+
+        if info_type != 4 {
+            tracing::error!(info_type, "invalid device info type requested");
+            return Err(TdispGuestOperationError::InvalidGuestAttestationReportType);
+        }
+
+        let device_info_buffer = self
+            .host_interface
+            .lock()
+            .tdisp_get_device_report(TdispReportType::InterfaceReport)
+            .context("failed to call to get device info from host");
+
+        match device_info_buffer {
+            Ok(device_info_buffer) => {
+                tracing::info!("Retrieve device info called successfully");
+                Ok(device_info_buffer)
+            }
+            Err(e) => {
+                tracing::error!("Failed to get device info from host: {e:?}");
                 Err(TdispGuestOperationError::HostFailedToProcessCommand)
             }
         }

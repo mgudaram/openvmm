@@ -37,6 +37,7 @@ impl GuestToHostCommandExt for GuestToHostCommand {
             Some(Command::StartTdi(_)) => Some("StartTdi"),
             Some(Command::Unbind(_)) => Some("Unbind"),
             Some(Command::GetTdiReport(_)) => Some("GetTdiReport"),
+            Some(Command::GetDeviceInfo(_)) => Some("GetDeviceInfo"),
             None => None,
         }
     }
@@ -70,6 +71,15 @@ impl GuestToHostResponseVariant for TdispCommandResponseGetTdiReport {
     fn from_response_variant(response: Response) -> Option<Self> {
         match response {
             Response::GetTdiReport(r) => Some(r),
+            _ => None,
+        }
+    }
+}
+
+impl GuestToHostResponseVariant for TdispCommandResponseGetDeviceInfo {
+    fn from_response_variant(response: Response) -> Option<Self> {
+        match response {
+            Response::GetDeviceInfo(r) => Some(r),
             _ => None,
         }
     }
@@ -124,6 +134,7 @@ impl GuestToHostResponseExt for GuestToHostResponse {
             Some(Response::StartTdi(_)) => Some("StartTdi"),
             Some(Response::Unbind(_)) => Some("Unbind"),
             Some(Response::GetTdiReport(_)) => Some("GetTdiReport"),
+            Some(Response::GetDeviceInfo(_)) => Some("GetDeviceInfo"),
             None => None,
         }
     }

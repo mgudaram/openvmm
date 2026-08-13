@@ -1013,6 +1013,17 @@ pub fn tdcall_tdi_mmio_accept(
         tdcall_result = u64::from(output.rax)
     );
 
+    log::info!(
+        "tdcall_tdi_mmio_accept mmio_base_addr={:x} mmio_range_idx={:x} gfunction_id={:x} range_size_offset={:x} returned_rcx={:x} returned_r9={:x} tdcall_result={:x}",
+        mmio_base_addr,
+        mmio_range_idx,
+        gfunction_id,
+        range_size_offset,
+        output.rcx,
+        output.r9,
+        u64::from(output.rax)
+    );
+
     let status = output.rax.code();
     let (gpa_address, range_size_offset) = if status == TdCallResultCode::SUCCESS {
         (0, 0)
@@ -1046,7 +1057,6 @@ pub fn tdcall_dmar_accept(
         r14: 0,
         r15: 0,
     };
-
 
     let output = call.tdcall(input);
 

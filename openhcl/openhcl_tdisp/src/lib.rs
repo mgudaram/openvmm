@@ -23,11 +23,14 @@ pub use tdisp_proto::GuestToHostCommandExt;
 pub use tdisp_proto::GuestToHostResponse;
 pub use tdisp_proto::GuestToHostResponseExt;
 pub use tdisp_proto::TdispCommandRequestGetDeviceInterfaceInfo;
+pub use tdisp_proto::TdispCommandRequestGetDeviceInfo;
 pub use tdisp_proto::TdispCommandResponseBind;
 pub use tdisp_proto::TdispCommandResponseGetDeviceInterfaceInfo;
+pub use tdisp_proto::TdispCommandResponseGetDeviceInfo;
 pub use tdisp_proto::TdispCommandResponseGetTdiReport;
 pub use tdisp_proto::TdispCommandResponseStartTdi;
 pub use tdisp_proto::TdispCommandResponseUnbind;
+pub use tdisp_proto::TdispDeviceInfoType;
 pub use tdisp_proto::TdispDeviceInterfaceInfo;
 pub use tdisp_proto::TdispGuestOperationErrorCode;
 pub use tdisp_proto::TdispGuestProtocolType;
@@ -71,6 +74,12 @@ pub trait TdispVirtualDeviceInterface: Send + Sync {
     fn tdisp_get_device_report(
         &self,
         report_type: &TdispReportType,
+    ) -> impl Future<Output = anyhow::Result<Vec<u8>>> + Send;
+
+    /// Request device info from the physical device depending on the info type.
+    fn tdisp_get_device_info(
+        &self,
+        info_type: &TdispDeviceInfoType,
     ) -> impl Future<Output = anyhow::Result<Vec<u8>>> + Send;
 
     /// Request a TDI report from the TDI or physical device.
@@ -133,6 +142,21 @@ pub fn new_get_tdi_report_command(
         command: Some(Command::GetTdiReport(TdispCommandRequestGetTdiReport {
             report_type: report_type as i32,
         })),
+    }
+}
+
+/// Creates a [`GuestToHostCommand`] for the `GetDeviceInfo` command.
+pub fn new_get_device_info_command(
+    device_id: u64,
+    info_type: TdispDeviceInfoType,
+) -> GuestToHostCommand {
+    GuestToHostCommand {
+        device_id,
+        command: Some(Command::GetDeviceInfo(
+            TdispCommandRequestGetDeviceInfo {
+                info_type: info_type as i32,
+            },
+        )),
     }
 }
 

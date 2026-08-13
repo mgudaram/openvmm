@@ -10464,6 +10464,7 @@ dependencies = [
  "futures-concurrency",
  "guestmem",
  "guid",
+ "hcl",
  "inspect",
  "mesh",
  "openhcl_tdisp",
