@@ -25,6 +25,7 @@ use std::cell::UnsafeCell;
 use std::os::fd::AsRawFd;
 use tdcall::Tdcall;
 use tdcall::tdcall_dmar_accept;
+use tdcall::tdcall_dmar_release;
 use tdcall::tdcall_tdi_mmio_accept;
 use tdcall::tdcall_tdi_start;
 use tdcall::tdcall_vp_invgla;
@@ -140,6 +141,14 @@ impl MshvVtl {
     ) -> Result<(), TdCallResultCode> {
         tdcall_dmar_accept(&mut MshvVtlTdcall(self), gfunction_id, target)
             .map_err(|err| err.code())
+    }
+
+    /// Issues TDG.DMAR.RELEASE via tdcall.
+    pub fn tdx_dmar_release_via_tdcall(
+        &self,
+        gfunction_id: u64,
+    ) -> Result<(), TdCallResultCode> {
+        tdcall_dmar_release(&mut MshvVtlTdcall(self), gfunction_id).map_err(|err| err.code())
     }
 }
 

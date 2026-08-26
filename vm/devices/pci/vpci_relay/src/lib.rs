@@ -250,6 +250,16 @@ impl VpciRelay {
             .map_err(|err| anyhow::anyhow!("tdcall dmar accept failed: {err:?}"))
     }
 
+    fn tdcall_dmar_release(gfunction_id: u64) -> anyhow::Result<()> {
+        let mshv = hcl::ioctl::Mshv::new().context("failed to open /dev/mshv")?;
+        let vtl = mshv
+            .create_vtl()
+            .context("failed to open mshv_vtl device")?;
+
+        vtl.tdx_dmar_release_via_tdcall(gfunction_id)
+            .map_err(|err| anyhow::anyhow!("tdcall dmar release failed: {err:?}"))
+    }
+
     /// Creates a new VPCI relay.
     pub fn new(
         driver_source: VmTaskDriverSource,
@@ -898,12 +908,65 @@ impl VpciRelay {
             }
         }*/
 
-        let dmar_target = DmarTarget {
+        let mut dmar_target = DmarTarget {
+            vm_idx: 0,
+            reserved: [0; 7],
+        };
+        
+        let mut dmar_target_u64 = u64::from_le_bytes([
+            dmar_target.vm_idx,
+            dmar_target.reserved[0],
+            dmar_target.reserved[1],
+            dmar_target.reserved[2],
+            dmar_target.reserved[3],
+            dmar_target.reserved[4],
+            dmar_target.reserved[5],
+            dmar_target.reserved[6],
+        ]);
+
+        // Accept DMAR per L1 VM, currently doing it for guest kernel with vm_idx = 0
+        match Self::tdcall_dmar_accept(tdi_device_id, dmar_target_u64) {
+            Ok(()) => {
+                tracing::info!(
+                    gfunction_id = tdi_device_id,
+                    target = dmar_target_u64,
+                    "TDG.DMAR.ACCEPT tdcall completed during TDISP startup"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    gfunction_id = tdi_device_id,
+                    target = dmar_target_u64,
+                    error = %err,
+                    "TDG.DMAR.ACCEPT tdcall failed; continuing TDISP startup"
+                );
+            }
+        }
+
+        // Accept DMAR per L2 VM, currently doing it for guest kernel with vm_idx = 1
+        match Self::tdcall_dmar_release(tdi_device_id) {
+            Ok(()) => {
+                tracing::info!(
+                    gfunction_id = tdi_device_id,
+                    "TDG.DMAR.RELEASE tdcall completed during TDISP startup"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    gfunction_id = tdi_device_id,
+                    error = %err,
+                    "TDG.DMAR.RELEASE tdcall failed; continuing TDISP startup"
+                );
+            }
+        }
+        
+
+        dmar_target = DmarTarget {
             vm_idx: 1,
             reserved: [0; 7],
         };
         
-        let dmar_target_u64 = u64::from_le_bytes([
+        dmar_target_u64 = u64::from_le_bytes([
             dmar_target.vm_idx,
             dmar_target.reserved[0],
             dmar_target.reserved[1],

@@ -1072,3 +1072,39 @@ pub fn tdcall_dmar_accept(
     }
 }
 
+/// Issue a TDG.DMAR.RELEASE call.
+pub fn tdcall_dmar_release(
+    call: &mut impl Tdcall,
+    gfunction_id: u64,
+) -> Result<(), TdCallResult> {
+    let input = TdcallInput {
+        leaf: TdCallLeaf::DMAR_RELEASE,
+        rcx: gfunction_id,
+        rdx: 0,
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    tracing_no_std::trace!(gfunction_id, tdcall_result = u64::from(output.rax));
+
+    log::info!(
+        "tdcall_dmar_release gfunction_id={:x} tdcall_result={:x} output.rcx={:x}",
+        gfunction_id,
+        u64::from(output.rax),
+        output.rcx
+    );
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(()),
+        _ => Err(output.rax),
+    }
+}
+
