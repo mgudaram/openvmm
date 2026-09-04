@@ -19,6 +19,7 @@ use futures_concurrency::future::Race;
 use guestmem::MemoryRead;
 use inspect::Inspect;
 use inspect::InspectMut;
+use memory_range::MemoryRange;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend;
 use openhcl_tdisp::GuestToHostCommand;
@@ -61,6 +62,10 @@ use vmcore::vpci_msi::RegisterInterruptError;
 use vpci_protocol as protocol;
 use vpci_protocol::MAX_VPCI_TDISP_COMMAND_SIZE;
 use vpci_protocol::SlotNumber;
+use x86defs::tdx::GpaVmAttributes;
+use x86defs::tdx::GpaVmAttributesMask;
+use x86defs::tdx::TdgMemPageAttrWriteR8;
+use x86defs::tdx::TdgMemPageGpaAttr;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -224,6 +229,8 @@ pub struct VpciDevice {
     dev: InUseDevice,
     #[inspect(skip)]
     tdi_device_id: Mutex<Option<u64>>,
+    #[inspect(skip)]
+    tdi_attached: Mutex<bool>,
     #[inspect(skip)]
     tdi_mmio_ranges: Mutex<Vec<TdiMmioRangeInfo>>,
     shadows: Mutex<ConfigSpaceShadows>,
@@ -426,6 +433,7 @@ impl VpciDeviceDescription {
 
         let device = VpciDevice {
             tdi_device_id: Mutex::new(None),
+            tdi_attached: Mutex::new(false),
             tdi_mmio_ranges: Mutex::new(Vec::new()),
             shadows: Mutex::new(ConfigSpaceShadows {
                 command: Command::new(),
@@ -473,6 +481,45 @@ impl Stream for VpciDeviceEject {
 }
 
 impl VpciDevice {
+    fn tdcall_tdi_mmio_page_attr_wr(
+        mmio_base_addr: u64,
+        range_size_offset: u64,
+    ) -> anyhow::Result<()> {
+        let range_size = range_size_offset
+            .checked_mul(4096)
+            .context("TDG.TDI.MMIO.ACCEPT range size overflowed")?;
+        let range_end = mmio_base_addr
+            .checked_add(range_size)
+            .context("TDG.TDI.MMIO.ACCEPT range end overflowed")?;
+        let mshv = hcl::ioctl::Mshv::new().context("failed to open /dev/mshv")?;
+        let vtl = mshv
+            .create_vtl()
+            .context("failed to open mshv_vtl device")?;
+        let attributes = TdgMemPageGpaAttr::new().with_l2_vm1(
+            GpaVmAttributes::new()
+                .with_valid(true)
+                .with_read(true)
+                .with_write(true),
+        );
+        let mask = TdgMemPageAttrWriteR8::new()
+            .with_l2_vm1(GpaVmAttributesMask::new().with_read(true).with_write(true));
+
+        vtl.tdx_set_page_attributes(MemoryRange::new(mmio_base_addr..range_end), attributes, mask)
+            .map_err(|err| anyhow::anyhow!("tdcall page attr wr failed: {err:?}"))?;
+
+        
+        tracing::info!(
+            mmio_base_addr,
+            range_end,
+            range_size_offset,
+            ?attributes,
+            ?mask,
+            "TDG.MEM.PAGE.ATTR.WR call succeeded"
+        );
+
+        Ok(())
+    }
+
     fn tdcall_tdi_mmio_accept(
         mmio_base_addr: u64,
         mmio_range_idx: u64,
@@ -611,6 +658,19 @@ impl VpciDevice {
         accessor.write(self.dev.id, offset, value);
 
         if should_accept_mmio {
+            if !accessor.set_slot(self.dev.id) {
+                tracing::info!(
+                    ?self.dev.id,
+                    "skipping TDG.TDI.MMIO.ACCEPT because VPCI device is removed"
+                );
+                return;
+            }
+            if !*self.tdi_attached.lock() {
+                tracing::info!(
+                    "skipping TDG.TDI.MMIO.ACCEPT because TDI device is not attached"
+                );
+                return;
+            }
             let Some(tdi_device_id) = *self.tdi_device_id.lock() else {
                 tracing::info!(
                     "skipping TDG.TDI.MMIO.ACCEPT because TDI device ID is unavailable"
@@ -706,6 +766,34 @@ impl VpciDevice {
 
                 matched_report_entries[report_index] = true;
                 let mmio_range_idx = report_index as u64;
+
+                if !mmio_base_addr.is_multiple_of(PAGE_SIZE_4K) {
+                    tracing::warn!(
+                        bar_index = bar.index,
+                        mmio_base_addr,
+                        mmio_len = bar.len,
+                        gfunction_id = tdi_device_id,
+                        "skipping TDG.TDI.MMIO.ACCEPT for BAR with non-4K-aligned base"
+                    );
+                    continue;
+                }
+
+                if let Err(err) = Self::tdcall_tdi_mmio_page_attr_wr(
+                    mmio_base_addr,
+                    range_size_offset,
+                ) {
+                    tracing::info!(
+                        error = %err,
+                        bar_index = bar.index,
+                        mmio_base_addr,
+                        mmio_len = bar.len,
+                        mmio_range_idx,
+                        gfunction_id = tdi_device_id,
+                        range_size_offset,
+                        "TDG.MEM.PAGE.ATTR.WR call failed"
+                    );
+                    continue;
+                }
 
                 if let Err(err) = Self::tdcall_tdi_mmio_accept(
                     mmio_base_addr,
@@ -925,7 +1013,10 @@ impl TdispVirtualDeviceInterface for VpciDevice {
             .await?;
 
         match res.response::<TdispCommandResponseStartTdi>() {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                *self.tdi_attached.lock() = true;
+                Ok(())
+            }
             Err(err) => Err(anyhow::anyhow!(
                 "error response in tdisp_start_device: {err}"
             )),
@@ -1052,6 +1143,7 @@ impl TdispVirtualDeviceInterface for VpciDevice {
     }
 
     async fn tdisp_unbind(&self, reason: TdispGuestUnbindReason) -> anyhow::Result<()> {
+        *self.tdi_attached.lock() = false;
         let res = self
             .send_tdisp_command(openhcl_tdisp::new_unbind_command(
                 self.dev.id.slot.into_bits() as u64,
