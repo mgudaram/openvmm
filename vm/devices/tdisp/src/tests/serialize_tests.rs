@@ -11,13 +11,16 @@ use crate::serialize_proto::serialize_command;
 use crate::serialize_proto::serialize_response;
 use crate::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
 use tdisp_proto::GuestToHostCommand;
+use tdisp_proto::GuestToHostCommandExt;
 use tdisp_proto::GuestToHostResponse;
+use tdisp_proto::GuestToHostResponseExt;
 use tdisp_proto::TdispCommandRequestBind;
 use tdisp_proto::TdispCommandRequestGetDeviceInterfaceInfo;
 use tdisp_proto::TdispCommandRequestGetTdiReport;
 use tdisp_proto::TdispCommandRequestStartTdi;
 use tdisp_proto::TdispCommandRequestUnbind;
 use tdisp_proto::TdispCommandResponseBind;
+use tdisp_proto::TdispCommandResponseGetDeviceInfo;
 use tdisp_proto::TdispCommandResponseGetDeviceInterfaceInfo;
 use tdisp_proto::TdispCommandResponseGetTdiReport;
 use tdisp_proto::TdispCommandResponseStartTdi;
@@ -100,6 +103,63 @@ fn test_command_get_tdi_report_roundtrip() {
         panic!("expected GetTdiReport command");
     };
     assert_eq!(req.report_type, TdispReportType::GuestDeviceId as i32);
+}
+
+#[test]
+fn test_command_recollect_tdi_report_roundtrip() {
+    let cmd = GuestToHostCommand {
+        device_id: 100,
+        command: Some(Command::GetTdiReport(TdispCommandRequestGetTdiReport {
+            report_type: TdispReportType::InterfaceReportRecollection as i32,
+        })),
+    };
+    let got = deserialize_command(&serialize_command(&cmd)).unwrap();
+    assert_eq!(got.type_name(), Some("GetTdiReport"));
+    let Some(Command::GetTdiReport(req)) = got.command else {
+        panic!("expected GetTdiReport command");
+    };
+    assert_eq!(req.report_type, 8);
+    // GetTdiReport remains command field 4; its report_type field carries value 8.
+    assert_eq!(serialize_command(&cmd), vec![0x08, 100, 0x22, 2, 0x08, 8]);
+}
+
+#[test]
+fn test_device_info_recollection_via_tdi_report_roundtrip() {
+    let command = GuestToHostCommand {
+        device_id: 100,
+        command: Some(Command::GetTdiReport(TdispCommandRequestGetTdiReport {
+            report_type: TdispReportType::DeviceInfoRecollection as i32,
+        })),
+    };
+    let bytes = serialize_command(&command);
+    assert_eq!(bytes, vec![0x08, 100, 0x22, 2, 0x08, 9]);
+    let decoded = deserialize_command(&bytes).unwrap();
+    assert_eq!(decoded.type_name(), Some("GetTdiReport"));
+    let Some(Command::GetTdiReport(request)) = decoded.command else {
+        panic!("expected GetTdiReport command");
+    };
+    assert_eq!(request.report_type, 9);
+
+    let device_info = vec![0xCA, 0xFE];
+    let response = make_response(Response::GetTdiReport(TdispCommandResponseGetTdiReport {
+        report_type: TdispReportType::DeviceInfoRecollection as i32,
+        report_buffer: device_info.clone(),
+    }));
+    let bytes = serialize_response(&response);
+    assert_eq!(
+        bytes,
+        vec![0x08, 1, 0x10, 1, 0x18, 2, 0x32, 6, 0x08, 9, 0x12, 2, 0xCA, 0xFE]
+    );
+    let decoded = deserialize_response(&bytes).unwrap();
+    let report = decoded.response::<TdispCommandResponseGetTdiReport>().unwrap();
+    assert_eq!(report.report_type, 9);
+    assert_eq!(report.report_buffer, device_info);
+
+    let empty_response = make_response(Response::GetTdiReport(TdispCommandResponseGetTdiReport {
+        report_type: TdispReportType::DeviceInfoRecollection as i32,
+        report_buffer: Vec::new(),
+    }));
+    assert!(deserialize_response(&serialize_response(&empty_response)).is_err());
 }
 
 #[test]
@@ -205,6 +265,50 @@ fn test_response_get_tdi_report_roundtrip() {
     assert_eq!(r.report_buffer, report_data);
 }
 
+#[test]
+fn test_response_recollect_tdi_report_roundtrip() {
+    let report_data = vec![0xDE, 0xAD, 0xBE, 0xEF];
+    let response = make_response(Response::GetTdiReport(
+        TdispCommandResponseGetTdiReport {
+            report_type: TdispReportType::InterfaceReportRecollection as i32,
+            report_buffer: report_data.clone(),
+        },
+    ));
+    let got = deserialize_response(&serialize_response(&response)).unwrap();
+    assert_eq!(got.type_name(), Some("GetTdiReport"));
+    assert!(
+        got.clone()
+            .response::<TdispCommandResponseGetDeviceInfo>()
+            .is_err()
+    );
+    let report = got
+        .response::<TdispCommandResponseGetTdiReport>()
+        .unwrap();
+    assert_eq!(report.report_type, 8);
+    assert_eq!(report.report_buffer, report_data);
+}
+
+#[test]
+fn test_response_recollect_device_info_roundtrip() {
+    let device_info = vec![0xDE, 0xAD, 0xBE, 0xEF];
+    let response = make_response(Response::GetDeviceInfo(TdispCommandResponseGetDeviceInfo {
+        device_info_buffer: device_info.clone(),
+    }));
+    assert_eq!(
+        serialize_response(&response),
+        vec![0x08, 1, 0x10, 1, 0x18, 2, 0x4A, 6, 0x0A, 4, 0xDE, 0xAD, 0xBE, 0xEF]
+    );
+    let got = deserialize_response(&serialize_response(&response)).unwrap();
+    assert_eq!(got.type_name(), Some("GetDeviceInfo"));
+    assert!(
+        got.clone()
+            .response::<TdispCommandResponseGetTdiReport>()
+            .is_err()
+    );
+    let info = got.response::<TdispCommandResponseGetDeviceInfo>().unwrap();
+    assert_eq!(info.device_info_buffer, device_info);
+}
+
 // ── Response validation-failure tests ────────────────────────────────────────
 
 #[test]
@@ -236,6 +340,17 @@ fn test_deserialize_response_rejects_missing_interface_info() {
     let resp = make_response(Response::GetDeviceInterfaceInfo(
         TdispCommandResponseGetDeviceInterfaceInfo {
             interface_info: None,
+        },
+    ));
+    let bytes = serialize_response(&resp);
+    assert!(deserialize_response(&bytes).is_err());
+}
+
+#[test]
+fn test_deserialize_response_rejects_empty_device_info_buffer() {
+    let resp = make_response(Response::GetDeviceInfo(
+        tdisp_proto::TdispCommandResponseGetDeviceInfo {
+            device_info_buffer: vec![],
         },
     ));
     let bytes = serialize_response(&resp);

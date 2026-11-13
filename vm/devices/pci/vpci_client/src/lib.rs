@@ -1036,7 +1036,17 @@ impl TdispVirtualDeviceInterface for VpciDevice {
 
         match res.response::<TdispCommandResponseGetTdiReport>() {
             Ok(r) => {
-                if matches!(*report_type, TdispReportType::InterfaceReport) {
+                if r.report_type != *report_type as i32 {
+                    return Err(anyhow::anyhow!(
+                        "report response type mismatch: requested {:?}, got {}",
+                        report_type,
+                        r.report_type
+                    ));
+                }
+                if matches!(
+                    *report_type,
+                    TdispReportType::InterfaceReport | TdispReportType::InterfaceReportRecollection
+                ) {
                     if let Ok(report) = tdisp::devicereport::deserialize_tdi_report(&r.report_buffer) {
                         *self.tdi_mmio_ranges.lock() = report
                             .mmio_interface_info
@@ -1067,7 +1077,10 @@ impl TdispVirtualDeviceInterface for VpciDevice {
             ))
             .await?;
 
-        if res.result == TdispGuestOperationErrorCode::Success as i32 && res.response.is_none() {
+        if *info_type != TdispDeviceInfoType::TdispReportDeviceInfoRecollect
+            && res.result == TdispGuestOperationErrorCode::Success as i32
+            && res.response.is_none()
+        {
             return Ok(Vec::new());
         }
 

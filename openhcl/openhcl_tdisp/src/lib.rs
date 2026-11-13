@@ -71,12 +71,15 @@ pub trait TdispVirtualDeviceInterface: Send + Sync {
     fn tdisp_start_device(&self) -> impl Future<Output = anyhow::Result<()>> + Send;
 
     /// Request a device report from the TDI or physical device depending on the report type.
+    /// [`TdispReportType::DeviceInfoRecollection`] returns raw device-info bytes,
+    /// not an interface report.
     fn tdisp_get_device_report(
         &self,
         report_type: &TdispReportType,
     ) -> impl Future<Output = anyhow::Result<Vec<u8>>> + Send;
 
     /// Request device info from the physical device depending on the info type.
+    /// Use [`TdispDeviceInfoType::TdispReportDeviceInfoRecollect`] for fresh info.
     fn tdisp_get_device_info(
         &self,
         info_type: &TdispDeviceInfoType,

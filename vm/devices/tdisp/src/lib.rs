@@ -56,6 +56,7 @@ pub use tdisp_proto::TdispCommandResponseGetDeviceInfo;
 pub use tdisp_proto::TdispCommandResponseGetTdiReport;
 pub use tdisp_proto::TdispCommandResponseStartTdi;
 pub use tdisp_proto::TdispCommandResponseUnbind;
+pub use tdisp_proto::TdispDeviceInfoType;
 pub use tdisp_proto::TdispDeviceInterfaceInfo;
 pub use tdisp_proto::TdispGuestOperationError;
 pub use tdisp_proto::TdispGuestOperationErrorCode;
@@ -95,6 +96,17 @@ pub trait TdispHostDeviceInterface: Send + Sync {
     /// Get a device interface report for the device.
     fn tdisp_get_device_report(&mut self, _report_type: TdispReportType)
     -> anyhow::Result<Vec<u8>>;
+
+    /// Get device-info bytes for the requested device-info type.
+    /// The default implementation preserves legacy behavior for implementations that do not yet
+    /// expose a distinct device-info path; real hosts should override this to return the
+    /// actual device-info report instead of the interface report.
+    fn tdisp_get_device_info(
+        &mut self,
+        _info_type: TdispDeviceInfoType,
+    ) -> anyhow::Result<Vec<u8>> {
+        self.tdisp_get_device_report(TdispReportType::InterfaceReport)
+    }
 }
 
 /// Trait added to host virtual devices to dispatch TDISP commands from guests.
@@ -721,8 +733,7 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         }
     }
 
-    /// Request device info bytes from the host without requiring the device to
-    /// be in the attestation states.
+    /// Request device info bytes. Recollection requires the `Locked` or `Run` state.
     #[instrument(fields(device_id = %self.debug_device_id), skip(self))]
     fn request_device_info(
         &mut self,
@@ -731,24 +742,26 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         self.ensure_negotiated_protocol()
             .map_err(|_| TdispGuestOperationError::InvalidDeviceState)?;
 
-        if info_type != 4 {
-            tracing::error!(info_type, "invalid device info type requested");
-            return Err(TdispGuestOperationError::InvalidGuestAttestationReportType);
-        }
+        let info_type = TdispDeviceInfoType::from_i32(info_type)
+            .ok_or(TdispGuestOperationError::InvalidGuestAttestationReportType)?;
 
         let device_info_buffer = self
             .host_interface
             .lock()
-            .tdisp_get_device_report(TdispReportType::InterfaceReport)
+            .tdisp_get_device_info(info_type)
             .context("failed to call to get device info from host");
 
         match device_info_buffer {
             Ok(device_info_buffer) => {
-                tracing::info!("Retrieve device info called successfully");
+                if device_info_buffer.is_empty() {
+                    tracing::error!(?info_type, "device info response was empty");
+                    return Err(TdispGuestOperationError::HostFailedToProcessCommand);
+                }
+                tracing::info!(?info_type, "Retrieve device info called successfully");
                 Ok(device_info_buffer)
             }
             Err(e) => {
-                tracing::error!("Failed to get device info from host: {e:?}");
+                tracing::error!(?info_type, "Failed to get device info from host: {e:?}");
                 Err(TdispGuestOperationError::HostFailedToProcessCommand)
             }
         }

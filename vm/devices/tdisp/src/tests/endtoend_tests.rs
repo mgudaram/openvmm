@@ -20,11 +20,13 @@ use tdisp_proto::GuestToHostCommand;
 use tdisp_proto::TdispCommandRequestBind;
 use tdisp_proto::TdispCommandRequestGetDeviceInterfaceInfo;
 use tdisp_proto::TdispCommandRequestGetTdiReport;
+use tdisp_proto::TdispCommandRequestGetDeviceInfo;
 use tdisp_proto::TdispCommandRequestStartTdi;
 use tdisp_proto::TdispCommandRequestUnbind;
 use tdisp_proto::TdispGuestOperationErrorCode;
 use tdisp_proto::TdispGuestProtocolType;
 use tdisp_proto::TdispGuestUnbindReason;
+use tdisp_proto::TdispDeviceInfoType;
 use tdisp_proto::TdispReportType;
 use tdisp_proto::TdispTdiState;
 use tdisp_proto::guest_to_host_command::Command;
@@ -107,6 +109,20 @@ fn get_tdi_report_cmd(device_id: u64, report_type: TdispReportType) -> GuestToHo
         command: Some(Command::GetTdiReport(TdispCommandRequestGetTdiReport {
             report_type: report_type as i32,
         })),
+    }
+}
+
+fn get_device_info_cmd(
+    device_id: u64,
+    info_type: TdispDeviceInfoType,
+) -> GuestToHostCommand {
+    GuestToHostCommand {
+        device_id,
+        command: Some(Command::GetDeviceInfo(
+            TdispCommandRequestGetDeviceInfo {
+                info_type: info_type as i32,
+            },
+        )),
     }
 }
 
@@ -280,6 +296,145 @@ fn test_get_tdi_report_in_run_state() {
         *mock.last_call.lock(),
         Some(LastCall::GetDeviceReport(TdispReportType::InterfaceReport))
     )
+}
+
+#[test]
+fn test_recollect_reports_in_locked_state() {
+    let mut mock = new_emulator();
+    dispatch_roundtrip(&mut mock.emulator, negotiate_cmd(1));
+    dispatch_roundtrip(&mut mock.emulator, bind_cmd(1));
+
+    let report = vec![0xCA, 0xFE, 0xBA, 0xBE];
+    *mock.report_buffer.lock() = report.clone();
+
+    let response = dispatch_roundtrip(
+        &mut mock.emulator,
+        get_tdi_report_cmd(1, TdispReportType::InterfaceReportRecollection),
+    );
+    assert_eq!(response.result, TdispGuestOperationErrorCode::Success as i32);
+    let Some(Response::GetTdiReport(recollected)) = response.response else {
+        panic!("expected GetTdiReport response");
+    };
+    assert_eq!(recollected.report_type, 8);
+    assert_eq!(recollected.report_buffer, report);
+    assert_eq!(
+        *mock.last_call.lock(),
+        Some(LastCall::GetDeviceReport(
+            TdispReportType::InterfaceReportRecollection
+        ))
+    );
+
+}
+
+#[test]
+fn test_device_info_recollection_via_tdi_report_states() {
+    for state in [
+        TdispTdiState::Unlocked,
+        TdispTdiState::Locked,
+        TdispTdiState::Run,
+    ] {
+        let mut mock = new_emulator();
+        dispatch_roundtrip(&mut mock.emulator, negotiate_cmd(1));
+        if state != TdispTdiState::Unlocked {
+            dispatch_roundtrip(&mut mock.emulator, bind_cmd(1));
+        }
+        if state == TdispTdiState::Run {
+            dispatch_roundtrip(&mut mock.emulator, start_tdi_cmd(1));
+        }
+
+        let device_info = vec![0xCA, 0xFE];
+        *mock.report_buffer.lock() = device_info.clone();
+        let response = dispatch_roundtrip(
+            &mut mock.emulator,
+            get_tdi_report_cmd(1, TdispReportType::DeviceInfoRecollection),
+        );
+        assert_eq!(response.tdi_state_after, state as i32);
+        if state == TdispTdiState::Unlocked {
+            assert_eq!(
+                response.result,
+                TdispGuestOperationErrorCode::InvalidGuestAttestationReportState as i32
+            );
+            assert!(response.response.is_none());
+            assert_eq!(*mock.last_call.lock(), Some(LastCall::UnbindDevice));
+        } else {
+            assert_eq!(response.result, TdispGuestOperationErrorCode::Success as i32);
+            let Some(Response::GetTdiReport(report)) = response.response else {
+                panic!("expected GetTdiReport response");
+            };
+            assert_eq!(report.report_type, 9);
+            assert_eq!(report.report_buffer, device_info);
+            assert_eq!(
+                *mock.last_call.lock(),
+                Some(LastCall::GetDeviceReport(
+                    TdispReportType::DeviceInfoRecollection
+                ))
+            );
+        }
+    }
+}
+
+#[test]
+fn test_initial_device_info_in_unlocked_state() {
+    let mut mock = new_emulator();
+    dispatch_roundtrip(&mut mock.emulator, negotiate_cmd(1));
+    *mock.report_buffer.lock() = vec![0xCA, 0xFE];
+    let response = dispatch_roundtrip(
+        &mut mock.emulator,
+        get_device_info_cmd(1, TdispDeviceInfoType::TdispReportDeviceInfo),
+    );
+    assert_eq!(response.result, TdispGuestOperationErrorCode::Success as i32);
+    assert_eq!(response.tdi_state_after, TdispTdiState::Unlocked as i32);
+    assert_eq!(
+        *mock.last_call.lock(),
+        Some(LastCall::GetDeviceInfo(
+            TdispDeviceInfoType::TdispReportDeviceInfo
+        ))
+    );
+}
+
+#[test]
+fn test_interface_report_recollection_in_run_state() {
+    let mut mock = new_emulator();
+    dispatch_roundtrip(&mut mock.emulator, negotiate_cmd(1));
+    dispatch_roundtrip(&mut mock.emulator, bind_cmd(1));
+    dispatch_roundtrip(&mut mock.emulator, start_tdi_cmd(1));
+
+    let report = vec![0xCA, 0xFE, 0xBA, 0xBE];
+    *mock.report_buffer.lock() = report.clone();
+    let response = dispatch_roundtrip(
+        &mut mock.emulator,
+        get_tdi_report_cmd(1, TdispReportType::InterfaceReportRecollection),
+    );
+    assert_eq!(response.result, TdispGuestOperationErrorCode::Success as i32);
+    assert_eq!(response.tdi_state_after, TdispTdiState::Run as i32);
+    let Some(Response::GetTdiReport(recollected)) = response.response else {
+        panic!("expected GetTdiReport response");
+    };
+    assert_eq!(recollected.report_type, 8);
+    assert_eq!(recollected.report_buffer, report);
+    assert_eq!(
+        *mock.last_call.lock(),
+        Some(LastCall::GetDeviceReport(
+            TdispReportType::InterfaceReportRecollection
+        ))
+    );
+}
+
+#[test]
+fn test_recollect_reports_rejected_in_unlocked_state() {
+    let mut mock = new_emulator();
+    dispatch_roundtrip(&mut mock.emulator, negotiate_cmd(1));
+
+    let response = dispatch_roundtrip(
+        &mut mock.emulator,
+        get_tdi_report_cmd(1, TdispReportType::InterfaceReportRecollection),
+    );
+    assert_eq!(
+        response.result,
+        TdispGuestOperationErrorCode::InvalidGuestAttestationReportState as i32
+    );
+    assert_eq!(response.tdi_state_after, TdispTdiState::Unlocked as i32);
+    assert!(response.response.is_none());
 }
 
 /// Sending a Bind command while already Locked returns an error and the

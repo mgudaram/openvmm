@@ -10,6 +10,7 @@ use crate::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
 use crate::test_helpers::TDISP_MOCK_SUPPORTED_FEATURES;
 use parking_lot::Mutex;
 use std::sync::Arc;
+use tdisp_proto::TdispDeviceInfoType;
 use tdisp_proto::TdispDeviceInterfaceInfo;
 use tdisp_proto::TdispGuestProtocolType;
 use tdisp_proto::TdispReportType;
@@ -21,6 +22,7 @@ pub enum LastCall {
     StartDevice,
     UnbindDevice,
     GetDeviceReport(TdispReportType),
+    GetDeviceInfo(TdispDeviceInfoType),
 }
 
 pub struct TrackingHostInterface {
@@ -46,13 +48,36 @@ impl TdispHostDeviceInterface for TrackingHostInterface {
 
     /// Returns a mock report buffer that is configurable.
     fn tdisp_get_device_report(&mut self, report_type: TdispReportType) -> anyhow::Result<Vec<u8>> {
-        if report_type == TdispReportType::InterfaceReport {
+        if matches!(
+            report_type,
+            TdispReportType::InterfaceReport
+                | TdispReportType::InterfaceReportRecollection
+                | TdispReportType::DeviceInfoRecollection
+        ) {
             *self.last_call.lock() = Some(LastCall::GetDeviceReport(report_type));
             Ok(self.report_buffer.lock().clone())
         } else {
             *self.last_call.lock() = Some(LastCall::GetDeviceReport(report_type));
             Err(anyhow::anyhow!(
-                "mock test checks only that InterfaceReport is requested"
+                "mock test supports only interface reports and recollection reports"
+            ))
+        }
+    }
+
+    fn tdisp_get_device_info(
+        &mut self,
+        info_type: TdispDeviceInfoType,
+    ) -> anyhow::Result<Vec<u8>> {
+        *self.last_call.lock() = Some(LastCall::GetDeviceInfo(info_type));
+        if matches!(
+            info_type,
+            TdispDeviceInfoType::TdispReportDeviceInfo
+                | TdispDeviceInfoType::TdispReportDeviceInfoRecollect
+        ) {
+            Ok(self.report_buffer.lock().clone())
+        } else {
+            Err(anyhow::anyhow!(
+                "mock test supports only device info collection and recollection"
             ))
         }
     }
