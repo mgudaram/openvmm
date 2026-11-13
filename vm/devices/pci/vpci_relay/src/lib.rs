@@ -203,6 +203,37 @@ impl VpciRelay {
             .map_err(|err| anyhow::anyhow!("tdcall tdi rd failed: {err:?}"))
     }
 
+    fn tdcall_tdi_rd_buffer(gfunction_id: u64, field: u64) -> anyhow::Result<Vec<u8>> {
+        let buffer = LockedMemorySpawner
+            .allocate_dma_buffer(4096)
+            .context("failed to allocate private DRAM page for TDG.TDI.RD")?;
+        let gpa = buffer.pfns()[0] * user_driver::memory::PAGE_SIZE64;
+        let len = Self::tdcall_tdi_rd(gfunction_id, field, gpa)?;
+        let len = usize::try_from(len).context("TDG.TDI.RD returned an invalid buffer length")?;
+        anyhow::ensure!(
+            len > 0 && len <= buffer.len(),
+            "TDG.TDI.RD returned an invalid buffer length: {len}"
+        );
+
+        let mut bytes = vec![0; len];
+        buffer.read_at(0, &mut bytes);
+        Ok(bytes)
+    }
+
+    fn tdcall_recollect_tdi_report_hash(
+        gfunction_id: u64,
+        report_type: TdispReportType,
+    ) -> anyhow::Result<Vec<u8>> {
+        const TDI_RD_FIELD_REPORT_HASH: u64 = 3;
+        const TDI_RD_FIELD_DEVICE_ATTESTATION_HASH: u64 = 4;
+        let field = match report_type {
+            TdispReportType::InterfaceReportRecollection => TDI_RD_FIELD_REPORT_HASH,
+            TdispReportType::DeviceInfoRecollection => TDI_RD_FIELD_DEVICE_ATTESTATION_HASH,
+            _ => anyhow::bail!("TDG.TDI.RD report hash is unsupported for {report_type:?}"),
+        };
+        Self::tdcall_tdi_rd_buffer(gfunction_id, field)
+    }
+
     fn tdcall_tdi_start(gfunction_id: u64, bind_session_id: u64) -> anyhow::Result<()> {
         let mshv = hcl::ioctl::Mshv::new().context("failed to open /dev/mshv")?;
         let vtl = mshv
@@ -726,7 +757,7 @@ impl VpciRelay {
             "received TDI report during TDISP startup"
         );
 
-        // Query device info via the new GetDeviceInfo command path. Do not fail
+        // Query device info via the GetDeviceInfo command path. Do not fail
         // startup if unsupported so diagnostics can continue.
         match device
             .tdisp_get_device_info(&TdispDeviceInfoType::TdispReportDeviceInfo)
@@ -816,7 +847,23 @@ impl VpciRelay {
             }
         }
 
-        
+        match device
+            .tdisp_get_device_report(&TdispReportType::BindReport)
+            .await
+        {
+            Ok(bind_report_buffer) => {
+                tracing::info!(
+                    bind_report_len = bind_report_buffer.len(),
+                    "received bind report during TDISP startup"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "bind report request failed; continuing TDISP startup"
+                );
+            }
+        }
 
         match Self::tdcall_tdi_start(tdi_device_id, tdi_rd_bindsession_value) {
             Ok(()) => {
@@ -992,6 +1039,131 @@ impl VpciRelay {
                     target = dmar_target_u64,
                     error = %err,
                     "TDG.DMAR.ACCEPT tdcall failed; continuing TDISP startup"
+                );
+            }
+        }
+
+        let tdi_rd_recollect_report_hash =
+            match Self::tdcall_recollect_tdi_report_hash(
+                tdi_device_id,
+                TdispReportType::InterfaceReportRecollection,
+            ) {
+                Ok(hash) => Some(hash),
+                Err(err) => {
+                    tracing::warn!(
+                        gfunction_id = tdi_device_id,
+                        error = %err,
+                        "failed to recollect interface report hash with TDG.TDI.RD"
+                    );
+                    None
+                }
+            };
+
+        match device
+            .tdisp_get_device_report(&TdispReportType::InterfaceReportRecollection)
+            .await
+        {
+            Ok(report_buffer) => {
+                let report_sha384 = Sha384::digest(&report_buffer);
+                let report_sha384_hex = report_sha384
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>();
+                tracing::info!(
+                    report_len = report_buffer.len(),
+                    report_sha384 = %report_sha384_hex,
+                    "recollected TDI interface report over VMBus"
+                );
+
+                match tdi_rd_recollect_report_hash {
+                    Some(hash) if hash.as_slice() == report_sha384.as_slice() => {
+                        tracing::info!(
+                            "TDG.TDI.RD recollected report hash matches the VMBus report"
+                        );
+                    }
+                    Some(hash) => {
+                        let tdi_rd_hash_hex = hash
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<String>();
+                        tracing::warn!(
+                            tdi_rd_hash = %tdi_rd_hash_hex,
+                            report_sha384 = %report_sha384_hex,
+                            "TDG.TDI.RD recollected report hash does not match the VMBus report"
+                        );
+                    }
+                    None => {
+                        tracing::warn!(
+                            "skipping TDI report hash comparison because TDG.TDI.RD recollection failed"
+                        );
+                    }
+                }
+
+                match tdisp::devicereport::deserialize_tdi_report(&report_buffer) {
+                    Ok(report) => tracing::info!(?report, "decoded recollected TDI interface report"),
+                    Err(err) => tracing::warn!(error = %err, "failed to decode recollected TDI interface report"),
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "failed to recollect TDI interface report over VMBus"
+                );
+            }
+        }
+
+        let report_type = TdispReportType::DeviceInfoRecollection;
+        let method = "GetTdiReport(type=9)";
+        tracing::info!(method, "requesting device-info recollection over VMBus");
+        match device.tdisp_get_device_report(&report_type).await {
+            Ok(device_info_buffer) => {
+                let tdi_deviceinfo_report_sha384 = Sha384::digest(&device_info_buffer);
+                let tdi_deviceinfo_report_sha384_hex = tdi_deviceinfo_report_sha384
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>();
+                tracing::info!(
+                    method,
+                    tdi_deviceinfo_report_len = device_info_buffer.len(),
+                    tdi_deviceinfo_report_sha384 = %tdi_deviceinfo_report_sha384_hex,
+                    "recollected device attestation report over VMBus"
+                );
+
+                match Self::tdcall_recollect_tdi_report_hash(tdi_device_id, report_type) {
+                    Ok(hash) if hash.as_slice() == tdi_deviceinfo_report_sha384.as_slice() => {
+                        tracing::info!(
+                            method,
+                            tdi_deviceinfo_report_sha384 = %tdi_deviceinfo_report_sha384_hex,
+                            "TDG.TDI.RD device attestation hash matches recollected VMBus report"
+                        );
+                    }
+                    Ok(hash) => {
+                        let tdi_rd_hash_hex = hash
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<String>();
+                        tracing::warn!(
+                            method,
+                            tdi_rd_device_attestation_hash = %tdi_rd_hash_hex,
+                            tdi_deviceinfo_report_sha384 = %tdi_deviceinfo_report_sha384_hex,
+                            "TDG.TDI.RD device attestation hash does not match recollected VMBus report"
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            method,
+                            gfunction_id = tdi_device_id,
+                            error = %err,
+                            "failed to recollect device attestation hash with TDG.TDI.RD"
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    method,
+                    error = %err,
+                    "device-info recollection command failed; continuing TDISP startup"
                 );
             }
         }

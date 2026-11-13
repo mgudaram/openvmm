@@ -10466,6 +10466,7 @@ dependencies = [
  "guid",
  "hcl",
  "inspect",
+ "memory_range",
  "mesh",
  "openhcl_tdisp",
  "pal_async",
@@ -10484,6 +10485,7 @@ dependencies = [
  "vmcore",
  "vpci",
  "vpci_protocol",
+ "x86defs",
  "zerocopy",
 ]
 

@@ -111,6 +111,12 @@ pub fn validate_response(response: &GuestToHostResponse) -> anyhow::Result<()> {
             }
         } else if let Some(Response::GetDeviceInterfaceInfo(req)) = &response.response {
             require_field!(req.interface_info)?;
+        } else if let Some(Response::GetDeviceInfo(req)) = &response.response {
+            if req.device_info_buffer.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "proto validation: device_info_buffer must not be empty"
+                ));
+            }
         }
     }
 
